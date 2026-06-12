@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
-import type { Account, Margin, Portfolio, Targets } from '../lib/types'
+import type { Account, Portfolio, Targets } from '../lib/types'
 
 interface DashboardData {
   portfolio: Portfolio | null
-  margin: Margin | null
   accounts: Account[]
   targets: Targets
 }
@@ -13,7 +12,6 @@ export function useDashboard() {
   const [account, setAccount] = useState('ALL')
   const [data, setData] = useState<DashboardData>({
     portfolio: null,
-    margin: null,
     accounts: [],
     targets: {},
   })
@@ -29,13 +27,12 @@ export function useDashboard() {
     setLoading(true)
     setError(null)
     try {
-      const [portfolio, margin, accounts, targets] = await Promise.all([
+      const [portfolio, accounts, targets] = await Promise.all([
         api.portfolio(accountId, signal),
-        api.margin(accountId, signal),
         api.accounts(signal),
         api.targets(accountId, signal),
       ])
-      setData({ portfolio, margin, accounts, targets })
+      setData({ portfolio, accounts, targets })
     } catch (err) {
       if ((err as Error).name === 'AbortError') return
       setError((err as Error).message)

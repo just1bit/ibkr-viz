@@ -1,14 +1,16 @@
 """IBKR Portfolio Viz — Flask backend.
 
-Single-file Flask application with SQLite storage and APScheduler for daily refresh.
-Runs in mock mode by default (no IBKR credentials needed).
+Single-file Flask application. Storage is SQLite or PostgreSQL (storage.py);
+an hourly APScheduler job self-checks for new IBKR reports (market-timezone
+gated, see refresh_real_data). Runs in mock mode by default (no credentials).
 """
 
 import os
 import time
 import json
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import yaml
 from flask import Flask, request, jsonify, send_from_directory
@@ -26,21 +28,27 @@ DIST_DIR = os.path.join(BASE_DIR, 'frontend', 'dist')
 
 def load_config():
     cfg_path = os.path.join(BASE_DIR, 'config.local.yaml')
+    # Defaults for every configurable knob — config.example.yaml documents them
     defaults = {
         'mock_mode': True,
         'flex_token': '',
         'flex_query_id': '',
+        'flex_max_wait': 30,
         'db_type': 'sqlite',
         'db_path': os.path.join(BASE_DIR, 'ibkr_portfolio.db'),
         'postgres_url': '',
-        'refresh_hour': 17,
-        'refresh_minute': 0,
+        'market_timezone': 'America/New_York',
+        'report_ready_hour': 1,
         'refresh_cooldown': 600,
+        'fetch_retry_backoff': 3600,
         's3_bucket': '',
         's3_endpoint': '',
         's3_region': 'us-east-1',
         's3_access_key': '',
         's3_secret_key': '',
+        's3_prefix': 'flex_raw/',
+        'port': 5123,
+        'debug': True,
     }
     if os.path.exists(cfg_path):
         with open(cfg_path) as f:
@@ -51,6 +59,10 @@ def load_config():
 config = load_config()
 app = Flask(__name__, static_folder=None)
 s3_store = storage.S3Store(config)
+
+# All report-cycle decisions are made in the market's timezone, so behavior
+# is identical no matter where (or in how many places) the app is deployed.
+MARKET_TZ = ZoneInfo(config['market_timezone'])
 
 # ---------------------------------------------------------------------------
 # Database helpers
@@ -93,102 +105,146 @@ def get_account_types():
     except Exception:
         return {}
 
+def _expected_report_date(now_mkt):
+    """Newest report date IBKR should have published by `now_mkt`.
+
+    `now_mkt` must be an aware datetime in MARKET_TZ; callers pass
+    datetime.now(MARKET_TZ), so the result is independent of the server's
+    own timezone. A statement for trading day T is generated around
+    00:15-00:30 ET on T+1 (observed), so past report_ready_hour (default
+    01:00 ET) we expect yesterday's report, before it only the day before
+    yesterday's, skipping weekends. Market holidays are unknown here, so on
+    holidays the expected date overshoots — the retry backoff in
+    refresh_real_data bounds the extra IBKR calls that causes.
+    """
+    days_back = 1 if now_mkt.hour >= config['report_ready_hour'] else 2
+    d = now_mkt.date() - timedelta(days=days_back)
+    while d.weekday() >= 5:  # Sat/Sun → previous Friday
+        d -= timedelta(days=1)
+    return d.strftime('%Y-%m-%d')
+
+
 def refresh_real_data():
-    """Fetch and store real IBKR Flex data.
+    """Fetch and store real IBKR Flex data, querying IBKR only when needed.
+
+    IBKR rate-limits Flex requests, so one is sent only when a report newer
+    than what the database holds should already be published (see
+    _expected_report_date), and at most once per fetch_retry_backoff seconds
+    while the expected report keeps failing to appear.
+
+    The statement covers IBKR's last business day, which lags the fetch date
+    by 1-2 days. All storage (S3 key, DB rows, last_refresh) is therefore
+    keyed by the report date parsed from the XML (toDate) — NEVER the local
+    fetch date.
 
     Pipeline (each step must succeed before the next):
       1. Fetch XML from IBKR → saved to LOCAL file immediately by flex_client
-      2. Upload local file → S3, then verify the S3 object exists
-      3. Parse XML in memory
-      4. Insert parsed data into database
+      2. Parse XML in memory → yields the report date
+      3. Upload local file → S3 under the report date, verify it exists
+      4. Insert parsed data into database under the report date
       5. Delete local file (only on full success)
 
     If any step fails, the local raw file is preserved so we never lose data
     that cost an IBKR rate-limited fetch.
+
+    Returns:
+        (report_date, is_new, error) — is_new is True when this call stored
+        a report date not previously in the database.
     """
     token = config.get('flex_token', '')
     query_id = config.get('flex_query_id', '')
     if not token or not query_id:
-        return None, 'Flex token or query ID not configured'
+        return None, False, 'Flex token or query ID not configured'
 
-    today = datetime.now().strftime('%Y-%m-%d')
-    local_path = os.path.join(BASE_DIR, f'flex_raw_{today}.xml')
+    now_mkt = datetime.now(MARKET_TZ)
+    today = now_mkt.strftime('%Y-%m-%d')  # only used for the temp file name
+    expected = _expected_report_date(now_mkt)
 
-    # Check if today's data already exists — avoid redundant IBKR calls
     conn = get_db()
     c = conn.cursor()
-    c.execute('SELECT COUNT(*) AS cnt FROM nav_history WHERE date = ?', (today,))
-    if c.fetchone()['cnt'] > 0:
-        set_config_val('last_refresh', today)
-        conn.commit()
-        conn.close()
-        return today, None
+    c.execute('SELECT MAX(date) AS latest FROM nav_history')
+    row = c.fetchone()
+    latest_stored = row['latest'] if row else None
     conn.close()
+
+    # The newest publishable report is already stored — nothing to ask IBKR
+    if latest_stored and latest_stored >= expected:
+        return latest_stored, False, None
+
+    # Expected report is missing: query IBKR, but back off between retries
+    # so a late report or an unrecognized holiday can't cause hammering.
+    try:
+        last_attempt = float(get_config_val('last_fetch_attempt', '0') or 0)
+    except (TypeError, ValueError):
+        last_attempt = 0
+    if time.time() - last_attempt < config['fetch_retry_backoff']:
+        return latest_stored, False, None
+    set_config_val('last_fetch_attempt', str(time.time()))
+
+    local_path = os.path.join(BASE_DIR, f'flex_raw_{today}.xml')
 
     # --- Step 1: Fetch + save locally (save happens inside get_flex_xml) ---
     try:
-        xml_text = flex_client.get_flex_xml(token, query_id, save_path=local_path)
+        xml_text = flex_client.get_flex_xml(token, query_id,
+                                            max_wait=config['flex_max_wait'],
+                                            save_path=local_path)
     except Exception as e:
-        return None, f'IBKR fetch failed: {e}'
+        return None, False, f'IBKR fetch failed: {e}'
 
-    # --- Step 2: Upload to S3 + verify ---
-    s3_store.save_raw_xml(today, xml_text)
-    if not s3_store.verify_raw_xml(today):
-        return None, f'S3 upload verification failed — raw XML preserved at {local_path}'
-
-    # --- Step 3: Parse ---
+    # --- Step 2: Parse (the report date comes from the statement itself) ---
     try:
         data = flex_parser.parse_flex_xml(xml_text, today)
     except Exception as e:
-        return None, f'Parse failed: {e} — raw XML preserved at {local_path}'
+        return None, False, f'Parse failed: {e} — raw XML preserved at {local_path}'
+    report_date = data['date']
 
-    # --- Step 4: Insert into database ---
+    # --- Step 3: Upload to S3 + verify ---
+    s3_store.save_raw_xml(report_date, xml_text)
+    if not s3_store.verify_raw_xml(report_date):
+        return None, False, f'S3 upload verification failed — raw XML preserved at {local_path}'
+
+    # --- Step 4: Insert into database (skip if report date already stored) ---
     try:
         conn = get_db()
         c = conn.cursor()
+        c.execute('SELECT COUNT(*) AS cnt FROM nav_history WHERE date = ?',
+                  (report_date,))
+        already_stored = c.fetchone()['cnt'] > 0
 
-        account_types = get_account_types()
-        for acc in data['accounts']:
-            aid = acc['account_id']
-            account_types[aid] = acc.get('account_type', 'MARGIN')
+        if not already_stored:
+            account_types = get_account_types()
+            for acc in data['accounts']:
+                aid = acc['account_id']
+                account_types[aid] = acc.get('account_type', 'MARGIN')
 
-            c.execute('''INSERT INTO nav_history
-                (date, account_id, net_liquidation, cash_balance,
-                 gross_pnl, day_pnl, leverage, margin_util)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                (today, aid, acc['net_liquidation'], acc['cash_balance'],
-                 acc['gross_pnl'], acc['day_pnl'],
-                 acc['leverage'], acc['margin_util']))
+                c.execute('''INSERT INTO nav_history
+                    (date, account_id, net_liquidation, cash_balance, day_pnl)
+                    VALUES (?, ?, ?, ?, ?)''',
+                    (report_date, aid, acc['net_liquidation'], acc['cash_balance'],
+                     acc['day_pnl']))
 
-            for h in acc['holdings']:
-                c.execute('''INSERT INTO daily_snapshot
-                    (date, account_id, ticker, full_name, asset_class, sector,
-                     quantity, market_value, cost_price, currency)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                    (today, aid, h['ticker'], h['full_name'], h['asset_class'],
-                     h['sector'], h['quantity'], h['market_value'],
-                     h['cost_price'], h['currency']))
+                for h in acc['holdings']:
+                    c.execute('''INSERT INTO daily_snapshot
+                        (date, account_id, ticker, full_name, asset_class, sector,
+                         quantity, market_value, cost_price, currency)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                        (report_date, aid, h['ticker'], h['full_name'], h['asset_class'],
+                         h['sector'], h['quantity'], h['market_value'],
+                         h['cost_price'], h['currency']))
 
-        set_config_val('account_types', json.dumps(account_types))
-        set_config_val('last_refresh', today)
+            set_config_val('account_types', json.dumps(account_types))
+
+        set_config_val('last_refresh', report_date)
         conn.commit()
         conn.close()
     except Exception as e:
-        return None, f'Database insert failed: {e} — raw XML preserved at {local_path}'
+        return None, False, f'Database insert failed: {e} — raw XML preserved at {local_path}'
 
     # --- Step 5: Clean up local file on success ---
     if os.path.exists(local_path):
         os.remove(local_path)
 
-    return today, None
-
-# ---------------------------------------------------------------------------
-# Color helpers
-# ---------------------------------------------------------------------------
-def margin_color(pct):
-    if pct < 40: return 'green'
-    if pct <= 70: return 'yellow'
-    return 'red'
+    return report_date, (not already_stored), None
 
 # ---------------------------------------------------------------------------
 # Portfolio builders (colors are assigned by the frontend, not here)
@@ -199,14 +255,14 @@ def account_summary(cursor, date, account_id):
     Always returns numeric values (missing rows default to 0)."""
     if account_id == 'ALL':
         cursor.execute('''SELECT SUM(net_liquidation) AS total_nav, SUM(cash_balance) AS total_cash,
-                          SUM(gross_pnl) AS total_gross_pnl, SUM(day_pnl) AS total_day_pnl
+                          SUM(day_pnl) AS total_day_pnl
                           FROM nav_history WHERE date = ?''', (date,))
     else:
         cursor.execute('''SELECT net_liquidation AS total_nav, cash_balance AS total_cash,
-                          gross_pnl AS total_gross_pnl, day_pnl AS total_day_pnl
+                          day_pnl AS total_day_pnl
                           FROM nav_history WHERE date = ? AND account_id = ?''', (date, account_id))
     row = cursor.fetchone()
-    keys = ('total_nav', 'total_cash', 'total_gross_pnl', 'total_day_pnl')
+    keys = ('total_nav', 'total_cash', 'total_day_pnl')
     return {k: (row[k] if row and row[k] is not None else 0) for k in keys}
 
 
@@ -275,8 +331,7 @@ def get_accounts():
     conn = get_db()
     c = conn.cursor()
     c.execute('''
-        SELECT n.account_id, n.net_liquidation, n.date,
-               n.gross_pnl, n.day_pnl, n.leverage, n.margin_util
+        SELECT n.account_id, n.net_liquidation, n.date, n.day_pnl
         FROM nav_history n
         WHERE n.date = (SELECT MAX(date) FROM nav_history WHERE account_id = n.account_id)
         ORDER BY n.account_id
@@ -291,10 +346,7 @@ def get_accounts():
             'account_id': r['account_id'],
             'net_liquidation': r['net_liquidation'],
             'date': r['date'],
-            'gross_pnl': r['gross_pnl'],
             'day_pnl': r['day_pnl'],
-            'leverage': r['leverage'],
-            'margin_util': r['margin_util'],
             'account_type': account_types.get(r['account_id'], 'MARGIN'),
         })
     return jsonify({'accounts': accounts})
@@ -306,14 +358,12 @@ def get_portfolio():
     conn = get_db()
     c = conn.cursor()
 
-    # Get latest date
     c.execute('SELECT MAX(date) AS max_date FROM daily_snapshot')
     latest_date = c.fetchone()['max_date']
     if not latest_date:
         conn.close()
         return jsonify({'error': 'No data'}), 404
 
-    # Build query
     if account_id == 'ALL':
         c.execute('''SELECT * FROM daily_snapshot WHERE date = ?''', (latest_date,))
     else:
@@ -356,7 +406,6 @@ def get_portfolio():
             'net_liquidation': round(summary['total_nav'], 2),
             'total_cash': round(summary['total_cash'], 2),
             'total_day_pnl': round(summary['total_day_pnl'], 2),
-            'total_gross_pnl': round(summary['total_gross_pnl'], 2),
             'cash_gap': round(summary['total_nav'] - securities_value, 2),
         },
         'asset_class_summary': group_summary(holdings, 'asset_class', alloc_total),
@@ -404,49 +453,6 @@ def targets():
         saved = {}
     return jsonify({'account_id': account_id, 'targets': saved})
 
-@app.route('/api/margin')
-def get_margin():
-    account_id = request.args.get('account_id', 'ALL')
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('SELECT MAX(date) AS max_date FROM nav_history')
-    latest_date = c.fetchone()['max_date']
-
-    if account_id == 'ALL':
-        c.execute('''SELECT SUM(net_liquidation) as total_nav,
-                     AVG(leverage) as avg_lev,
-                     AVG(margin_util) as avg_margin
-                     FROM nav_history WHERE date = ?''', (latest_date,))
-    else:
-        c.execute('''SELECT net_liquidation as total_nav,
-                     leverage as avg_lev,
-                     margin_util as avg_margin
-                     FROM nav_history WHERE date = ? AND account_id = ?''',
-                  (latest_date, account_id))
-
-    row = c.fetchone()
-    conn.close()
-
-    if not row or not row['total_nav']:
-        return jsonify({'error': 'No data'}), 404
-
-    leverage = round(row['avg_lev'], 2) if row['avg_lev'] else 0
-    margin_u = round(row['avg_margin'], 2) if row['avg_margin'] else 0
-
-    account_types = get_account_types()
-    is_cash = False
-    if account_id != 'ALL':
-        is_cash = account_types.get(account_id, 'MARGIN') == 'CASH'
-
-    return jsonify({
-        'account_id': account_id,
-        'leverage': leverage,
-        'margin_util': margin_u,
-        'is_cash_account': is_cash,
-        'color_margin': margin_color(margin_u),
-    })
-
 @app.route('/api/trigger-refresh')
 def trigger_refresh():
     """Manual refresh with rate limiting."""
@@ -482,16 +488,22 @@ def trigger_refresh():
             'mode': 'mock',
             'message': f'Mock data refreshed to {new_date}'
         })
+
+    new_date, is_new, error = refresh_real_data()
+    if error:
+        return jsonify({'error': error}), 500
+    if is_new:
+        message = f'New report stored: {new_date}'
+    elif new_date:
+        message = f'Already up to date — latest report is {new_date}'
     else:
-        new_date, error = refresh_real_data()
-        if error:
-            return jsonify({'error': error}), 500
-        return jsonify({
-            'status': 'ok',
-            'date': new_date,
-            'mode': 'live',
-            'message': f'Live data refreshed to {new_date}'
-        })
+        message = 'No report available yet'
+    return jsonify({
+        'status': 'ok',
+        'date': new_date,
+        'mode': 'live',
+        'message': message
+    })
 
 @app.route('/api/status')
 def get_status():
@@ -515,36 +527,37 @@ def get_status():
 # Startup
 # ---------------------------------------------------------------------------
 def setup_scheduler():
-    """Initialize APScheduler for daily refresh."""
+    """Hourly self-check instead of a fixed daily time.
+
+    refresh_real_data is gated on the expected report date (computed in the
+    market timezone), so the hourly tick costs one DB query when data is
+    current and only queries IBKR when a new report should exist. This needs
+    no schedule configuration and behaves identically in any server timezone;
+    with a shared database, multiple instances dedupe against each other.
+    """
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
         scheduler = BackgroundScheduler()
-        hour = config['refresh_hour']
-        minute = config['refresh_minute']
-        def scheduled_refresh():
-            if config['mock_mode']:
+        if config['mock_mode']:
+            def mock_refresh():
                 conn = get_db()
                 mock_data.incremental_update(conn)
                 conn.close()
-            else:
-                refresh_real_data()
-
-        scheduler.add_job(
-            func=scheduled_refresh,
-            trigger='cron',
-            hour=hour,
-            minute=minute,
-            id='daily_refresh'
-        )
+            scheduler.add_job(mock_refresh, 'interval', days=1, id='daily_mock_refresh')
+        else:
+            scheduler.add_job(
+                refresh_real_data, 'interval', hours=1,
+                next_run_time=datetime.now() + timedelta(seconds=15),
+                id='hourly_refresh',
+            )
         scheduler.start()
     except ImportError:
         pass  # APScheduler optional
 
-# Initialize
 init_db()
 ensure_data()
 setup_scheduler()
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5123))
-    app.run(debug=True, host='0.0.0.0', port=port)
+    port = int(os.environ.get('PORT', config['port']))
+    app.run(debug=bool(config['debug']), host='0.0.0.0', port=port)

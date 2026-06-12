@@ -19,9 +19,9 @@
 | 编号 | 需求 | 状态 |
 |------|------|------|
 | D-01 | Flex Web Service 接入：配置 Token 与 Query ID，服务端拉取报表，原始 XML 存入对象存储，解析后落库 | ✅ |
-| D-02 | 每日定时刷新一次，前端展示上次刷新时间 | ✅ |
+| D-02 | 后台每小时自检（以市场时区判断新报告是否应已发布），前端展示最新报表日 | ✅ |
 | D-03 | 手动刷新按钮，带冷却限制（频率受限）| ✅ |
-| D-04 | DB 优先：当日数据已存在则跳过 IBKR 请求，一天最多拉取一次 | ✅ |
+| D-04 | 按报表发布周期拉取：最新应发布的报表已入库或未到发布时间则不请求 IBKR；报表缺失时带退避重试（最多每小时一次） | ✅ |
 
 ### 3.2 账户与概览
 
@@ -30,9 +30,8 @@
 | A-01 | 多子账户自动识别并列出 | ✅ |
 | A-02 | 子账户切换：顶部下拉，选中后仅展示该账户数据 | ✅ |
 | A-03 | 合并视图："All accounts" 将各子账户合并统计 | ✅ |
-| A-04 | KPI 概览卡：净值、当日盈亏、总盈亏、市值、现金、保证金占用；盈亏以涨绿跌红展示 | ✅ |
-| A-05 | 保证金占用率单卡，按高低分级配色；现金账户隐藏该卡 | ✅ |
-| A-06 | 全局金额隐藏：一键切换，模糊所有金额，便于公共场合查看 | ✅ |
+| A-04 | KPI 概览卡：净值、当日盈亏、市值、现金；盈亏以涨绿跌红展示 | ✅ |
+| A-05 | 全局金额隐藏：一键切换，模糊所有金额，便于公共场合查看 | ✅ |
 
 ### 3.3 持仓占比（环形图）
 
@@ -90,7 +89,7 @@
 | 层 | 方案 |
 |----|------|
 | 前端 | Vite + React + TypeScript + Tailwind CSS，ECharts 按需引入 |
-| 后端 | Python Flask + APScheduler（每日定时拉取）|
+| 后端 | Python Flask + APScheduler（每小时自检，市场时区判断是否拉取）|
 | 数据库 | SQLite（本地）/ PostgreSQL（生产），storage.py 抽象层自动适配 |
 | 原始存储 | S3 兼容对象存储（AWS S3 / Cloudflare R2 / MinIO）|
 | 部署 | 前端构建后由 Flask 托管，单进程启动 |
@@ -102,7 +101,6 @@
 | `GET /api/portfolio` | 最新持仓与分类汇总（环形图 + 图例 + 再平衡表数据源）；现金作为持仓纳入，含 `summary.allocation_total`（= 证券市值 + 现金）|
 | `GET /api/targets` | 读取该账户已保存的再平衡目标占比 `{ticker: pct}` |
 | `POST /api/targets` | 保存该账户的目标占比（body：`{account_id, targets}`；服务端过滤非数字/负值）|
-| `GET /api/margin` | 保证金占用率 |
 | `GET /api/accounts` | 子账户列表 |
 | `GET /api/status` | 刷新状态（上次刷新时间、冷却剩余）|
 | `GET /api/trigger-refresh` | 触发手动刷新（带冷却限制）|
@@ -124,6 +122,6 @@ IBKR Flex Web Service
    Flask API ──→ React SPA（ECharts 渲染）
 ```
 
-- 三张表：每日持仓快照（daily_snapshot）、每日净值/现金（nav_history，仅用于 KPI 的当日/累计盈亏与现金余额基线，不再用于绘制走势）、键值配置（config，含按账户保存的再平衡目标占比 `targets_<account_id>`）
-- DB 优先，当日已有数据则跳过 IBKR 请求
+- 三张表：每日持仓快照（daily_snapshot）、每日净值/现金（nav_history，仅用于 KPI 的当日盈亏与现金余额基线，不再用于绘制走势）、键值配置（config，含按账户保存的再平衡目标占比 `targets_<account_id>`）
+- 按报表周期拉取：数据按报表日（XML toDate）入库，最新应发布报表已入库则不请求 IBKR
 - S3 原始存储为可选；storage.py 自动处理两种数据库的占位符差异

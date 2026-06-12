@@ -57,12 +57,12 @@ def generate_nav_history(days=400, start_nav=100000):
     """Generate daily NAV / cash history for all accounts.
 
     The product no longer charts returns over time, but a short history is
-    still needed so day P/L (vs. the previous day) and total P/L (vs. the
-    first day) have a baseline, and so incremental refresh has a prior row.
+    still needed so day P/L (vs. the previous day) has a baseline, and so
+    incremental refresh has a prior row.
 
     Returns:
         dates: list of date strings 'YYYY-MM-DD'
-        nav_data: {account_id: [(date, nav, cash, gross_pnl, day_pnl, leverage, margin_util), ...]}
+        nav_data: {account_id: [(date, nav, cash, day_pnl), ...]}
     """
     end_date = datetime(2026, 5, 2)
     dates = [(end_date - timedelta(days=i)) for i in range(days - 1, -1, -1)]
@@ -77,15 +77,8 @@ def generate_nav_history(days=400, start_nav=100000):
         for i, (d, nav) in enumerate(zip(date_strs, nav_series)):
             cash = max(1000, nav * cash_ratio * (0.8 + random.random() * 0.4))
             day_pnl = nav - nav_series[i - 1] if i > 0 else 0
-            gross_pnl = nav - start_nav
-            # Leverage varies slowly around 1.5-2.8
-            leverage = 1.5 + 0.5 * math.sin(i * 0.01) + random.gauss(0, 0.15)
-            leverage = round(max(1.0, min(3.5, leverage)), 2)
-            # Margin utilization ~20-45%
-            margin_util = 25 + 10 * math.sin(i * 0.015 + 1) + random.gauss(0, 3)
-            margin_util = round(max(5, min(60, margin_util)), 1)
 
-            rows.append((d, nav, cash, gross_pnl, day_pnl, leverage, margin_util))
+            rows.append((d, nav, cash, day_pnl))
         nav_data[aid] = rows
 
     return date_strs, nav_data
@@ -119,10 +112,7 @@ def seed_database(conn) -> None:
         account_id      TEXT NOT NULL,
         net_liquidation REAL,
         cash_balance    REAL,
-        gross_pnl       REAL,
         day_pnl         REAL,
-        leverage        REAL,
-        margin_util     REAL,
         PRIMARY KEY (date, account_id)
     )''')
 
@@ -160,10 +150,9 @@ def seed_database(conn) -> None:
     for aid in ACCOUNT_IDS:
         for row in nav_data[aid]:
             c.execute('''INSERT INTO nav_history
-                (date, account_id, net_liquidation, cash_balance,
-                 gross_pnl, day_pnl, leverage, margin_util)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                (row[0], aid, row[1], row[2], row[3], row[4], row[5], row[6]))
+                (date, account_id, net_liquidation, cash_balance, day_pnl)
+                VALUES (?, ?, ?, ?, ?)''',
+                (row[0], aid, row[1], row[2], row[3]))
 
     # Insert config (table freshly created, plain INSERT is safe)
     c.execute('INSERT INTO config (key, value) VALUES (?, ?)',
@@ -194,34 +183,25 @@ def incremental_update(conn) -> str:
 
     for aid in ACCOUNT_IDS:
         # Get previous NAV
-        c.execute('''SELECT net_liquidation, cash_balance, leverage, margin_util
+        c.execute('''SELECT net_liquidation, cash_balance
                      FROM nav_history WHERE date = ? AND account_id = ?''',
                   (last_date, aid))
         prev = c.fetchone()
         if not prev:
             continue
 
-        prev_nav, prev_cash, prev_lev, prev_margin = prev
+        prev_nav, prev_cash = prev
 
         # Small random change
         daily_ret = random.gauss(0.0004, 0.012)  # ~ daily return + noise
         new_nav = round(prev_nav * (1 + daily_ret), 2)
         new_cash = round(prev_cash * (1 + random.gauss(0.0, 0.005)), 2)
         day_pnl = round(new_nav - prev_nav, 2)
-        c.execute('SELECT net_liquidation FROM nav_history WHERE account_id = ? ORDER BY date ASC LIMIT 1', (aid,))
-        initial_nav = c.fetchone()[0]
-        gross_pnl = round(new_nav - initial_nav, 2)
-
-        new_lev = round(prev_lev + random.gauss(0, 0.05), 2)
-        new_lev = max(1.0, min(3.5, new_lev))
-        new_margin = round(prev_margin + random.gauss(0, 1.0), 1)
-        new_margin = max(5, min(60, new_margin))
 
         c.execute('''INSERT INTO nav_history
-            (date, account_id, net_liquidation, cash_balance,
-             gross_pnl, day_pnl, leverage, margin_util)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-            (next_date, aid, new_nav, new_cash, gross_pnl, day_pnl, new_lev, new_margin))
+            (date, account_id, net_liquidation, cash_balance, day_pnl)
+            VALUES (?, ?, ?, ?, ?)''',
+            (next_date, aid, new_nav, new_cash, day_pnl))
 
         # Insert daily_snapshot rows
         c.execute('''SELECT ticker, full_name, asset_class, sector, quantity,

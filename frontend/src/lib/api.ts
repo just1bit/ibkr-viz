@@ -1,4 +1,4 @@
-import type { Account, Margin, Portfolio, Status, Targets } from './types'
+import type { Account, Portfolio, Status, Targets } from './types'
 
 async function getJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(url, { signal })
@@ -41,12 +41,6 @@ export const api = {
     if (!res.ok) throw new Error('Failed to save targets')
     return (await res.json()).targets as Targets
   },
-
-  margin: (accountId: string, signal?: AbortSignal) =>
-    getJSON<Margin>(
-      `/api/margin?account_id=${encodeURIComponent(accountId)}`,
-      signal,
-    ),
 
   status: (signal?: AbortSignal) => getJSON<Status>('/api/status', signal),
 

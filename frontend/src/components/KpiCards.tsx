@@ -1,13 +1,12 @@
-import type { Margin, Portfolio } from '../lib/types'
+import type { Portfolio } from '../lib/types'
 import { fmtPct, fmtUSD } from '../lib/format'
 
 interface Props {
   portfolio: Portfolio
-  margin: Margin | null
   hidden: boolean
 }
 
-type Tone = 'neutral' | 'pos' | 'neg' | 'warn'
+type Tone = 'neutral' | 'pos' | 'neg'
 
 interface Kpi {
   label: string
@@ -17,13 +16,10 @@ interface Kpi {
   mask?: boolean
 }
 
-export function KpiCards({ portfolio, margin, hidden }: Props) {
+export function KpiCards({ portfolio, hidden }: Props) {
   const s = portfolio.summary
   const netLiq = s.net_liquidation || s.total_value
   const dayRate = netLiq ? (s.total_day_pnl / (netLiq - s.total_day_pnl)) * 100 : 0
-  const grossRate = netLiq
-    ? (s.total_gross_pnl / (netLiq - s.total_gross_pnl)) * 100
-    : 0
 
   const cards: Kpi[] = [
     { label: 'Net asset value', value: fmtUSD(netLiq, hidden), mask: true },
@@ -34,34 +30,12 @@ export function KpiCards({ portfolio, margin, hidden }: Props) {
       tone: s.total_day_pnl >= 0 ? 'pos' : 'neg',
       mask: true,
     },
-    {
-      label: 'Total P/L',
-      value: fmtPct(grossRate),
-      delta: fmtUSD(s.total_gross_pnl, hidden),
-      tone: s.total_gross_pnl >= 0 ? 'pos' : 'neg',
-      mask: true,
-    },
     { label: 'Market value', value: fmtUSD(s.total_value, hidden), mask: true },
     { label: 'Cash balance', value: fmtUSD(s.total_cash, hidden), mask: true },
   ]
 
-  if (margin && !margin.is_cash_account) {
-    const tone: Tone =
-      margin.color_margin === 'green'
-        ? 'pos'
-        : margin.color_margin === 'yellow'
-          ? 'warn'
-          : 'neg'
-    cards.push({
-      label: 'Margin usage',
-      value: `${margin.margin_util.toFixed(1)}%`,
-      delta: `${margin.leverage.toFixed(2)}× lev`,
-      tone,
-    })
-  }
-
   return (
-    <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3 xl:grid-cols-6">
+    <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
       {cards.map((c, i) => (
         <KpiCard key={c.label} kpi={c} hidden={hidden} index={i} />
       ))}
@@ -73,7 +47,6 @@ const toneText: Record<Tone, string> = {
   neutral: 'text-text',
   pos: 'text-pos',
   neg: 'text-neg',
-  warn: 'text-warn',
 }
 
 function KpiCard({

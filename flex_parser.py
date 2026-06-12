@@ -5,16 +5,18 @@ insertion.
 
   FlexQueryResponse
     └── FlexStatement (one per account)
-          ├── AccountInformation          → account metadata, type
+          ├── AccountInformation                     → account type
           ├── EquitySummaryInBase
-          │     └── EquitySummaryByReportDateInBase  → NAV, cash, leverage
+          │     └── EquitySummaryByReportDateInBase  → NAV, cash, day P&L
           ├── CashReport
-          │     └── CashReportCurrency                → cash balances
-          └── OpenPositions
-                └── OpenPosition                      → holdings
+          │     └── CashReportCurrency               → cash (fallback)
+          ├── OpenPositions
+          │     └── OpenPosition                     → holdings + cost basis
+          └── MTMPerformanceSummaryInBase
+                └── MTMPerformanceSummaryUnderlying  → holdings (fallback)
 
 Usage:
-    data = parse_flex_xml(xml_text, date_str="2026-05-14")
+    data = parse_flex_xml(xml_text)
 """
 
 import xml.etree.ElementTree as ET
@@ -30,16 +32,24 @@ CATEGORY_MAP = {
 }
 
 
+def _statement_date(stmt) -> str:
+    """Period end date of a statement — the date the data actually describes.
+
+    Flex statements with period=LastBusinessDay lag the fetch date by 1-2
+    days, so the fetch date must never be used to label the data. IBKR may
+    format toDate as YYYY-MM-DD or YYYYMMDD depending on query settings.
+    """
+    raw = (stmt.get('toDate') or '').strip()
+    if len(raw) == 8 and raw.isdigit():
+        return f'{raw[:4]}-{raw[4:6]}-{raw[6:]}'
+    return raw
+
+
 def _asset_class(asset_cat: str, sub_cat: str) -> str:
     """Normalize IBKR assetCategory / subCategory into our asset class."""
-    asset_cat = (asset_cat or 'STK').upper()
     if sub_cat == 'ETF':
         return 'ETF'
-    if asset_cat == 'OPT':
-        return 'OPTION'
-    if asset_cat == 'STK':
-        return 'STOCK'
-    return CATEGORY_MAP.get(asset_cat, 'STOCK')
+    return CATEGORY_MAP.get((asset_cat or 'STK').upper(), 'STOCK')
 
 
 def _parse_mtm_holdings(stmt) -> list:
@@ -77,8 +87,12 @@ def _parse_mtm_holdings(stmt) -> list:
     return holdings
 
 
-def parse_flex_xml(xml_text: str, date_str: str) -> Dict:
+def parse_flex_xml(xml_text: str, date_str: str = '') -> Dict:
     """Parse a real IBKR Flex statement XML.
+
+    The returned 'date' is the report date taken from the statements' toDate
+    attribute (the period the data describes). date_str is only a fallback
+    for statements that carry no toDate.
 
     Returns:
         {'date': str, 'accounts': [{
@@ -86,10 +100,7 @@ def parse_flex_xml(xml_text: str, date_str: str) -> Dict:
             'account_type': 'MARGIN' | 'CASH',
             'net_liquidation': float,
             'cash_balance': float,
-            'gross_pnl': float,
             'day_pnl': float,
-            'leverage': float,
-            'margin_util': float,
             'holdings': [{
                 'ticker': str, 'full_name': str, 'asset_class': str,
                 'sector': str, 'quantity': float, 'market_value': float,
@@ -99,9 +110,13 @@ def parse_flex_xml(xml_text: str, date_str: str) -> Dict:
     """
     root = ET.fromstring(xml_text)
     accounts = []
+    report_dates = []
 
     for stmt in root.iter('FlexStatement'):
         account_id = stmt.get('accountId', '')
+        stmt_date = _statement_date(stmt)
+        if stmt_date:
+            report_dates.append(stmt_date)
 
         # --- Account type ---
         account_type = 'MARGIN'
@@ -112,7 +127,6 @@ def parse_flex_xml(xml_text: str, date_str: str) -> Dict:
 
         # --- NAV from EquitySummaryInBase ---
         net_liq = 0.0
-        gross_pos_value = 0.0
         es_by_date = {}
         es_container = stmt.find('EquitySummaryInBase')
         if es_container is not None:
@@ -121,32 +135,27 @@ def parse_flex_xml(xml_text: str, date_str: str) -> Dict:
                 es_by_date[rd] = {
                     'total': float(es.get('total', 0)),
                     'cash': float(es.get('cash', 0)),
-                    'stock': float(es.get('stock', 0)),
-                    'options': float(es.get('options', 0)),
                 }
             if es_by_date:
-                latest_rd = max(es_by_date.keys())
-                latest_es = es_by_date[latest_rd]
-                net_liq = latest_es['total']
-                gross_pos_value = latest_es['stock'] + latest_es['options']
+                net_liq = es_by_date[max(es_by_date.keys())]['total']
 
-        # --- Cash balance ---
+        # --- Cash balance (ledger cash, same basis as NAV) ---
+        # Settled cash lags trades by the T+1 settlement window, so prefer
+        # the equity summary's cash; fall back to CashReport endingCash.
         cash_balance = 0.0
-        cr_container = stmt.find('CashReport')
-        if cr_container is not None:
-            for crc in cr_container.iter('CashReportCurrency'):
-                if crc.get('currency') == 'BASE_SUMMARY':
-                    cash_balance = float(crc.get('endingSettledCash', 0))
-                    break
+        if es_by_date:
+            cash_balance = es_by_date[max(es_by_date)]['cash']
+        else:
+            cr_container = stmt.find('CashReport')
+            if cr_container is not None:
+                for crc in cr_container.iter('CashReportCurrency'):
+                    if crc.get('currency') == 'BASE_SUMMARY':
+                        cash_balance = float(crc.get('endingCash')
+                                             or crc.get('endingSettledCash', 0))
+                        break
 
-        # --- Leverage ---
-        leverage = 0.0
-        if net_liq > 0 and gross_pos_value > 0:
-            leverage = round(gross_pos_value / net_liq, 2)
-
-        # --- PnL from multi-date equity summary ---
+        # --- Day PnL from multi-date equity summary ---
         day_pnl = 0.0
-        gross_pnl = 0.0
         sorted_dates = sorted(es_by_date.keys())
         if len(sorted_dates) >= 2:
             day_pnl = round(
@@ -154,9 +163,6 @@ def parse_flex_xml(xml_text: str, date_str: str) -> Dict:
                 - es_by_date[sorted_dates[-2]]['total'],
                 2,
             )
-        if len(sorted_dates) >= 1:
-            first_total = es_by_date[sorted_dates[0]]['total']
-            gross_pnl = round(net_liq - first_total, 2)
 
         # --- Holdings: prefer OpenPositions (has cost basis), else MTM ---
         holdings = []
@@ -190,11 +196,9 @@ def parse_flex_xml(xml_text: str, date_str: str) -> Dict:
             'account_type': account_type,
             'net_liquidation': round(net_liq, 2),
             'cash_balance': round(cash_balance, 2),
-            'gross_pnl': gross_pnl,
             'day_pnl': day_pnl,
-            'leverage': leverage,
-            'margin_util': 0.0,
             'holdings': holdings,
         })
 
-    return {'date': date_str, 'accounts': accounts}
+    return {'date': max(report_dates) if report_dates else date_str,
+            'accounts': accounts}

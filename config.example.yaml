@@ -1,0 +1,68 @@
+# =============================================================================
+# IBKR Portfolio Viz — 配置模板
+#
+# 使用方法：复制本文件为 config.local.yaml 并填入真实值。
+#   cp config.example.yaml config.local.yaml
+# config.local.yaml 已被 .gitignore 忽略，密钥不会进入版本库。
+# 所有键都有默认值（见 app.py load_config），省略的键按默认值运行。
+# =============================================================================
+
+# --- 运行模式 -----------------------------------------------------------------
+# true  = mock 模式：无需 IBKR 凭证，用内置模拟数据运行（开箱即用）
+# false = live 模式：从 IBKR Flex Web Service 拉取真实数据
+mock_mode: true
+
+# --- IBKR Flex Web Service（mock_mode: false 时必填）---------------------------
+# 在 IBKR Client Portal → Performance & Reports → Flex Queries 中创建：
+#   flex_token   : Flex Web Service 的 token
+#   flex_query_id: Flex Query 的 ID（所需 Sections 见 README）
+flex_token: ""
+flex_query_id: ""
+
+# 等待 IBKR 生成报表的最长秒数（两步轮询的超时上限）
+flex_max_wait: 30
+
+# --- 数据库 --------------------------------------------------------------------
+# db_type: "sqlite"（本地开发，单文件）或 "postgres"（远程/生产）
+db_type: "sqlite"
+# sqlite 数据库文件路径（仅 db_type: sqlite 时使用）
+db_path: "ibkr_portfolio.db"
+# PostgreSQL 连接串（仅 db_type: postgres 时使用）
+postgres_url: ""
+
+# --- 原始 XML 对象存储（可选，留空 s3_bucket 即关闭）----------------------------
+# 每份 Flex XML 按报表日存档（key 为 <s3_prefix><报表日>.xml），用于审计与重解析。
+# 兼容 AWS S3 / Cloudflare R2 / MinIO。
+s3_bucket: ""
+s3_endpoint: ""          # 留空 = AWS S3；R2/MinIO 填各自的 endpoint URL
+s3_region: "auto"
+s3_access_key: ""
+s3_secret_key: ""
+s3_prefix: "flex_raw/"   # 对象 key 前缀
+
+# --- 数据刷新与 IBKR 请求节流 ---------------------------------------------------
+# 报告周期的全部判断都以市场时区为基准（与部署机器的时区无关）：
+# 换时区、迁移服务器、全球多地部署，均无需修改任何配置；
+# 多个实例共享同一数据库时会自动彼此去重，不会重复请求 IBKR。
+#
+# 后台每小时自检一次：最新应发布的报告已入库 → 不发任何请求；
+# 应发布但缺失 → 询问 IBKR（受 fetch_retry_backoff 节流）。
+
+# IBKR 报告挂钩的市场时区（IANA 名称）。美股账户保持默认即可，
+# 夏令时自动处理。
+market_timezone: "America/New_York"
+
+# 市场时区下，报表日 T 的日报告在 T+1 的该小时起视为已发布。
+# 实测 IBKR 在美东 00:15-00:30 生成前一交易日报告，默认 1（01:00 ET）留余量。
+report_ready_hour: 1
+
+# 报告缺失（市场节假日、IBKR 生成延迟）时，两次 IBKR 询问的最小间隔秒数
+fetch_retry_backoff: 3600
+
+# 手动刷新按钮的冷却秒数（防误触连点）
+refresh_cooldown: 600
+
+# --- 服务 ----------------------------------------------------------------------
+# 监听端口（环境变量 PORT 优先于此值）与 Flask debug 模式
+port: 5123
+debug: true

@@ -2,10 +2,7 @@ export interface Account {
   account_id: string
   net_liquidation: number
   date: string
-  gross_pnl: number
   day_pnl: number
-  leverage: number
-  margin_util: number
   account_type: string
 }
 
@@ -40,7 +37,6 @@ export interface PortfolioSummary {
   net_liquidation: number
   total_cash: number
   total_day_pnl: number
-  total_gross_pnl: number
   cash_gap: number
 }
 
@@ -57,14 +53,6 @@ export interface Portfolio {
 
 /** Map of ticker → target weight (percent of the portfolio). */
 export type Targets = Record<string, number>
-
-export interface Margin {
-  account_id: string
-  leverage: number
-  margin_util: number
-  is_cash_account: boolean
-  color_margin: 'green' | 'yellow' | 'red'
-}
 
 export interface Status {
   last_refresh: string

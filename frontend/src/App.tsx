@@ -13,7 +13,6 @@ export default function App() {
     account,
     setAccount,
     portfolio,
-    margin,
     accounts,
     targets,
     loading,
@@ -63,7 +62,7 @@ export default function App() {
           <Skeleton />
         ) : portfolio ? (
           <div className="space-y-4 sm:space-y-5">
-            <KpiCards portfolio={portfolio} margin={margin} hidden={hidden} />
+            <KpiCards portfolio={portfolio} hidden={hidden} />
             <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-2 sm:gap-5">
               <AllocationCard portfolio={portfolio} hidden={hidden} />
               <RebalanceCard

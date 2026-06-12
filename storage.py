@@ -50,10 +50,7 @@ def init_db(conn):
         account_id      TEXT NOT NULL,
         net_liquidation REAL,
         cash_balance    REAL,
-        gross_pnl       REAL,
         day_pnl         REAL,
-        leverage        REAL,
-        margin_util     REAL,
         PRIMARY KEY (date, account_id)
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS config (
@@ -97,11 +94,15 @@ class S3Store:
             aws_secret_access_key=config.get('s3_secret_key') or None,
         )
         self.bucket = config['s3_bucket']
+        self.prefix = config.get('s3_prefix', 'flex_raw/')
+
+    def _key(self, date_str):
+        return f'{self.prefix}{date_str}.xml'
 
     def save_raw_xml(self, date_str, xml_text):
         if not self.enabled:
             return
-        key = f'flex_raw/{date_str}.xml'
+        key = self._key(date_str)
         self.client.put_object(
             Bucket=self.bucket,
             Key=key,
@@ -112,7 +113,7 @@ class S3Store:
     def get_raw_xml(self, date_str):
         if not self.enabled:
             return None
-        key = f'flex_raw/{date_str}.xml'
+        key = self._key(date_str)
         try:
             resp = self.client.get_object(Bucket=self.bucket, Key=key)
             return resp['Body'].read().decode('utf-8')
@@ -123,7 +124,7 @@ class S3Store:
         """Confirm an object exists in S3 after upload. Returns True if found."""
         if not self.enabled:
             return True
-        key = f'flex_raw/{date_str}.xml'
+        key = self._key(date_str)
         try:
             self.client.head_object(Bucket=self.bucket, Key=key)
             return True
