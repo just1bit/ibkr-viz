@@ -38,12 +38,12 @@
 | 编号 | 需求 | 状态 |
 |------|------|------|
 | C-01 | 个股权重视图（默认）：环形图按市值排序，过小持仓合并为 "Others" | ✅ |
-| C-02 | 行业分布视图：按 Sector 汇总 | ✅ |
 | C-03 | 资产配置视图：按 Asset Class 汇总 | ✅ |
-| C-04 | 三视图 Tab 切换（Holdings / Sector / Asset class）| ✅ |
+| C-04 | 双视图 Tab 切换（Holdings / Asset class）| ✅ |
 | C-05 | 图例与扇区双向高亮联动；中心显示总额或选中项占比 | ✅ |
 | C-06 | 图例：PC 端置于图右侧，移动端置于图下方 | ✅ |
-| C-07 | 现金作为一类持仓纳入占比：所有视图中 cash 都作为一块（asset class = CASH，sector = Cash），占比分母为「证券市值 + 现金」，全部扇区之和为 100%。现金固定以中性灰色显示，区别于证券 | ✅ |
+| C-07 | 现金作为一类持仓纳入占比：所有视图中 cash 都作为一块（asset class = CASH），占比分母为「证券市值 + 现金」，全部扇区之和为 100%。现金固定以中性灰色显示，区别于证券 | ✅ |
+| C-08 | Holdings 视图悬浮提示展示该持仓的当日盈亏（XML MTM 摘要直取，涨绿跌红）| ✅ |
 
 ### 3.4 再平衡（Rebalance）
 
@@ -98,7 +98,7 @@
 
 | 端点 | 用途 |
 |------|------|
-| `GET /api/portfolio` | 最新持仓与分类汇总（环形图 + 图例 + 再平衡表数据源）；现金作为持仓纳入，含 `summary.allocation_total`（= 证券市值 + 现金）|
+| `GET /api/portfolio` | 最新持仓与分类汇总（环形图 + 图例 + 再平衡表数据源）；现金作为持仓纳入，占比由前端按市值实时计算 |
 | `GET /api/targets` | 读取该账户已保存的再平衡目标占比 `{ticker: pct}` |
 | `POST /api/targets` | 保存该账户的目标占比（body：`{account_id, targets}`；服务端过滤非数字/负值）|
 | `GET /api/accounts` | 子账户列表 |
@@ -122,6 +122,6 @@ IBKR Flex Web Service
    Flask API ──→ React SPA（ECharts 渲染）
 ```
 
-- 三张表：每日持仓快照（daily_snapshot）、每日净值/现金（nav_history，仅用于 KPI 的当日盈亏与现金余额基线，不再用于绘制走势）、键值配置（config，含按账户保存的再平衡目标占比 `targets_<account_id>`）
+- 三张表：每日持仓快照（daily_snapshot：数量、市值、市价、成本、未实现盈亏、当日盈亏、多空方向，全部直取 XML，不做本地推算）、每日净值/现金/当日盈亏（nav_history，净值与现金取自 EquitySummary、当日盈亏取自 MTM 汇总行，不再用于绘制走势）、键值配置（config，含按账户保存的再平衡目标占比 `targets_<account_id>`）
 - 按报表周期拉取：数据按报表日（XML toDate）入库，最新应发布报表已入库则不请求 IBKR
 - S3 原始存储为可选；storage.py 自动处理两种数据库的占位符差异

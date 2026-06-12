@@ -7,37 +7,36 @@ export interface Account {
 }
 
 export interface Holding {
+  conid: string
   ticker: string
   full_name: string
   asset_class: string
-  sector: string
+  side: string
   quantity: number
   market_value: number
-  cost_price: number
+  mark_price: number | null
+  cost_price: number | null
+  cost_basis: number | null
   unrealized_pnl: number
-  unrealized_pnl_pct: number
+  day_pnl: number
   currency: string
   account_id: string
-  weight: number
 }
 
 export interface AllocationSlice {
   name: string
   value: number
-  pct: number
   /** Assigned on the client (see AllocationCard); absent in the API response. */
   color?: string
   full_name?: string
-  asset_class?: string
+  day_pnl?: number
 }
 
 export interface PortfolioSummary {
   total_value: number
-  allocation_total: number
   net_liquidation: number
   total_cash: number
   total_day_pnl: number
-  cash_gap: number
 }
 
 export interface Portfolio {
@@ -47,7 +46,6 @@ export interface Portfolio {
   holdings: Holding[]
   summary: PortfolioSummary
   asset_class_summary: AllocationSlice[]
-  sector_summary: AllocationSlice[]
   ticker_summary: AllocationSlice[]
 }
 
@@ -60,4 +58,4 @@ export interface Status {
   refresh_cooldown_remaining: number
 }
 
-export type DonutView = 'ticker' | 'sector' | 'asset_class'
+export type DonutView = 'ticker' | 'asset_class'

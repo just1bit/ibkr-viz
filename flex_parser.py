@@ -1,19 +1,19 @@
 """IBKR Flex XML statement parser.
 
 Parses real IBKR Flex XML responses into structured dictionaries for database
-insertion.
+insertion. Every value is read directly from the XML — no fallbacks and no
+recomputation of figures the statement already provides. A missing section or
+attribute is a data problem in the Flex query, not something to paper over.
 
   FlexQueryResponse
     └── FlexStatement (one per account)
           ├── AccountInformation                     → account type
           ├── EquitySummaryInBase
-          │     └── EquitySummaryByReportDateInBase  → NAV, cash, day P&L
-          ├── CashReport
-          │     └── CashReportCurrency               → cash (fallback)
-          ├── OpenPositions
-          │     └── OpenPosition                     → holdings + cost basis
-          └── MTMPerformanceSummaryInBase
-                └── MTMPerformanceSummaryUnderlying  → holdings (fallback)
+          │     └── EquitySummaryByReportDateInBase  → NAV, ledger cash
+          ├── MTMPerformanceSummaryInBase
+          │     └── MTMPerformanceSummaryUnderlying  → day P&L (account + per position)
+          └── OpenPositions
+                └── OpenPosition                     → holdings
 
 Usage:
     data = parse_flex_xml(xml_text)
@@ -49,50 +49,18 @@ def _asset_class(asset_cat: str, sub_cat: str) -> str:
     """Normalize IBKR assetCategory / subCategory into our asset class."""
     if sub_cat == 'ETF':
         return 'ETF'
-    return CATEGORY_MAP.get((asset_cat or 'STK').upper(), 'STOCK')
+    return CATEGORY_MAP.get((asset_cat or '').upper(), 'STOCK')
 
 
-def _parse_mtm_holdings(stmt) -> list:
-    """Fallback holdings source when OpenPositions is empty.
-
-    Some Flex queries report positions only under MTMPerformanceSummaryInBase.
-    Market value is reconstructed as closeQuantity x closePrice x multiplier,
-    which reproduces the EquitySummary stock/options totals exactly. This
-    section carries no cost basis, so unrealized P&L is left at zero.
-    """
-    container = stmt.find('MTMPerformanceSummaryInBase')
-    if container is None:
-        return []
-    holdings = []
-    for pos in container.iter('MTMPerformanceSummaryUnderlying'):
-        symbol = pos.get('symbol', '')
-        asset_cat = (pos.get('assetCategory', '') or '').upper()
-        if not symbol or asset_cat in ('', 'CASH'):
-            continue
-        qty = float(pos.get('closeQuantity', 0) or 0)
-        price = float(pos.get('closePrice', 0) or 0)
-        multiplier = float(pos.get('multiplier', 1) or 1)
-        if qty == 0:
-            continue
-        holdings.append({
-            'ticker': symbol,
-            'full_name': pos.get('description', ''),
-            'asset_class': _asset_class(asset_cat, pos.get('subCategory', '')),
-            'sector': 'Other',
-            'quantity': abs(qty),
-            'market_value': round(qty * price * multiplier, 2),
-            'cost_price': 0.0,
-            'currency': pos.get('currency', 'USD'),
-        })
-    return holdings
+def _num(el, attr) -> float:
+    return float(el.get(attr) or 0)
 
 
-def parse_flex_xml(xml_text: str, date_str: str = '') -> Dict:
+def parse_flex_xml(xml_text: str) -> Dict:
     """Parse a real IBKR Flex statement XML.
 
     The returned 'date' is the report date taken from the statements' toDate
-    attribute (the period the data describes). date_str is only a fallback
-    for statements that carry no toDate.
+    attribute (the period the data describes).
 
     Returns:
         {'date': str, 'accounts': [{
@@ -102,9 +70,11 @@ def parse_flex_xml(xml_text: str, date_str: str = '') -> Dict:
             'cash_balance': float,
             'day_pnl': float,
             'holdings': [{
-                'ticker': str, 'full_name': str, 'asset_class': str,
-                'sector': str, 'quantity': float, 'market_value': float,
-                'cost_price': float, 'currency': str
+                'conid': str, 'ticker': str, 'full_name': str,
+                'asset_class': str, 'side': str,
+                'quantity': float, 'market_value': float, 'mark_price': float,
+                'cost_price': float, 'cost_basis': float,
+                'unrealized_pnl': float, 'day_pnl': float, 'currency': str
             }]
         }]}
     """
@@ -114,82 +84,48 @@ def parse_flex_xml(xml_text: str, date_str: str = '') -> Dict:
 
     for stmt in root.iter('FlexStatement'):
         account_id = stmt.get('accountId', '')
-        stmt_date = _statement_date(stmt)
-        if stmt_date:
-            report_dates.append(stmt_date)
+        report_dates.append(_statement_date(stmt))
 
-        # --- Account type ---
-        account_type = 'MARGIN'
-        acc_info = stmt.find('AccountInformation')
-        if acc_info is not None:
-            caps = acc_info.get('accountCapabilities', 'MARGIN').upper()
-            account_type = 'CASH' if caps == 'CASH' else 'MARGIN'
+        caps = stmt.find('AccountInformation').get('accountCapabilities', '').upper()
+        account_type = 'CASH' if caps == 'CASH' else 'MARGIN'
 
-        # --- NAV from EquitySummaryInBase ---
-        net_liq = 0.0
-        es_by_date = {}
-        es_container = stmt.find('EquitySummaryInBase')
-        if es_container is not None:
-            for es in es_container.iter('EquitySummaryByReportDateInBase'):
-                rd = es.get('reportDate', '')
-                es_by_date[rd] = {
-                    'total': float(es.get('total', 0)),
-                    'cash': float(es.get('cash', 0)),
-                }
-            if es_by_date:
-                net_liq = es_by_date[max(es_by_date.keys())]['total']
+        # --- NAV + ledger cash: latest EquitySummary row (NAV basis:
+        #     cash + positions + accruals == total) ---
+        es_rows = list(stmt.find('EquitySummaryInBase'))
+        latest_es = max(es_rows, key=lambda e: e.get('reportDate', ''))
+        net_liq = _num(latest_es, 'total')
+        cash_balance = _num(latest_es, 'cash')
 
-        # --- Cash balance (ledger cash, same basis as NAV) ---
-        # Settled cash lags trades by the T+1 settlement window, so prefer
-        # the equity summary's cash; fall back to CashReport endingCash.
-        cash_balance = 0.0
-        if es_by_date:
-            cash_balance = es_by_date[max(es_by_date)]['cash']
-        else:
-            cr_container = stmt.find('CashReport')
-            if cr_container is not None:
-                for crc in cr_container.iter('CashReportCurrency'):
-                    if crc.get('currency') == 'BASE_SUMMARY':
-                        cash_balance = float(crc.get('endingCash')
-                                             or crc.get('endingSettledCash', 0))
-                        break
-
-        # --- Day PnL from multi-date equity summary ---
+        # --- Day P&L from MTM performance: the blank-symbol row is the
+        #     account total IBKR reports directly; named rows are per
+        #     position, joined to holdings below by conid ---
         day_pnl = 0.0
-        sorted_dates = sorted(es_by_date.keys())
-        if len(sorted_dates) >= 2:
-            day_pnl = round(
-                es_by_date[sorted_dates[-1]]['total']
-                - es_by_date[sorted_dates[-2]]['total'],
-                2,
-            )
+        mtm_by_conid = {}
+        for row in stmt.find('MTMPerformanceSummaryInBase'):
+            if (row.get('symbol') or '').strip():
+                mtm_by_conid[row.get('conid', '')] = round(_num(row, 'total'), 2)
+            else:
+                day_pnl = round(_num(row, 'total'), 2)
 
-        # --- Holdings: prefer OpenPositions (has cost basis), else MTM ---
         holdings = []
-        op_container = stmt.find('OpenPositions')
-        if op_container is not None:
-            for pos in op_container.iter('OpenPosition'):
-                qty = abs(float(pos.get('position', 0)))
-                mv = float(pos.get('positionValue', 0))
-                cost_price = float(pos.get('costBasisPrice', 0))
-                cost_money = float(pos.get('costBasisMoney', 0))
-                if cost_price == 0 and qty > 0 and cost_money > 0:
-                    cost_price = round(cost_money / qty, 4)
-
-                holdings.append({
-                    'ticker': pos.get('symbol', ''),
-                    'full_name': pos.get('description', ''),
-                    'asset_class': _asset_class(pos.get('assetCategory', 'STK'),
-                                                pos.get('subCategory', '')),
-                    'sector': 'Other',
-                    'quantity': qty,
-                    'market_value': mv,
-                    'cost_price': cost_price,
-                    'currency': pos.get('currency', 'USD'),
-                })
-
-        if not holdings:
-            holdings = _parse_mtm_holdings(stmt)
+        for pos in stmt.find('OpenPositions'):
+            conid = pos.get('conid', '')
+            holdings.append({
+                'conid': conid,
+                'ticker': pos.get('symbol', ''),
+                'full_name': pos.get('description', ''),
+                'asset_class': _asset_class(pos.get('assetCategory', ''),
+                                            pos.get('subCategory', '')),
+                'side': pos.get('side', ''),
+                'quantity': _num(pos, 'position'),
+                'market_value': _num(pos, 'positionValue'),
+                'mark_price': _num(pos, 'markPrice'),
+                'cost_price': _num(pos, 'costBasisPrice'),
+                'cost_basis': _num(pos, 'costBasisMoney'),
+                'unrealized_pnl': _num(pos, 'fifoPnlUnrealized'),
+                'day_pnl': mtm_by_conid.get(conid, 0.0),
+                'currency': pos.get('currency', 'USD'),
+            })
 
         accounts.append({
             'account_id': account_id,
@@ -200,5 +136,4 @@ def parse_flex_xml(xml_text: str, date_str: str = '') -> Dict:
             'holdings': holdings,
         })
 
-    return {'date': max(report_dates) if report_dates else date_str,
-            'accounts': accounts}
+    return {'date': max(report_dates), 'accounts': accounts}

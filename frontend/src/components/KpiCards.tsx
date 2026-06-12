@@ -18,7 +18,7 @@ interface Kpi {
 
 export function KpiCards({ portfolio, hidden }: Props) {
   const s = portfolio.summary
-  const netLiq = s.net_liquidation || s.total_value
+  const netLiq = s.net_liquidation
   const dayRate = netLiq ? (s.total_day_pnl / (netLiq - s.total_day_pnl)) * 100 : 0
 
   const cards: Kpi[] = [

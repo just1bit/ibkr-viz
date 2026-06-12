@@ -14,23 +14,23 @@ random.seed(42)
 # Mock holdings — 16 tickers with realistic allocations
 # ---------------------------------------------------------------------------
 MOCK_HOLDINGS = [
-    # (ticker, full_name, asset_class, sector, qty, price, account_id)
-    ('QQQ', 'Invesco QQQ Trust', 'ETF', 'Technology', 120, 480.50, 'U123456'),
-    ('AAPL', 'Apple Inc.', 'STOCK', 'Technology', 80, 183.20, 'U123456'),
-    ('MSFT', 'Microsoft Corporation', 'STOCK', 'Technology', 55, 425.10, 'U123456'),
-    ('AMZN', 'Amazon.com Inc.', 'STOCK', 'Consumer Cyclical', 120, 178.30, 'U123456'),
-    ('GOOGL', 'Alphabet Inc.', 'STOCK', 'Communication', 40, 163.50, 'U123456'),
-    ('NVDA', 'NVIDIA Corporation', 'STOCK', 'Technology', 25, 880.20, 'U123456'),
-    ('IAU', 'iShares Gold Trust', 'ETF', 'Commodities', 400, 44.80, 'U234567'),
-    ('SPY', 'SPDR S&P 500 ETF', 'ETF', 'Broad Market', 55, 525.60, 'U234567'),
-    ('GLD', 'SPDR Gold Shares', 'ETF', 'Commodities', 60, 215.30, 'U234567'),
-    ('BND', 'Vanguard Total Bond Market ETF', 'BOND', 'Fixed Income', 200, 71.50, 'U234567'),
-    ('JPM', 'JPMorgan Chase & Co.', 'STOCK', 'Financial', 60, 198.40, 'U123456'),
-    ('JNJ', 'Johnson & Johnson', 'STOCK', 'Healthcare', 40, 156.70, 'U345678'),
-    ('XOM', 'Exxon Mobil Corporation', 'STOCK', 'Energy', 70, 118.20, 'U345678'),
-    ('PEP', 'PepsiCo Inc.', 'STOCK', 'Consumer Defensive', 30, 172.80, 'U345678'),
-    ('RING', 'Direxion Gold Miners ETF', 'ETF', 'Commodities', 150, 42.50, 'U345678'),
-    ('VTI', 'Vanguard Total Stock Market ETF', 'ETF', 'Broad Market', 40, 265.30, 'U345678'),
+    # (ticker, full_name, asset_class, qty, price, account_id)
+    ('QQQ', 'Invesco QQQ Trust', 'ETF', 120, 480.50, 'U123456'),
+    ('AAPL', 'Apple Inc.', 'STOCK', 80, 183.20, 'U123456'),
+    ('MSFT', 'Microsoft Corporation', 'STOCK', 55, 425.10, 'U123456'),
+    ('AMZN', 'Amazon.com Inc.', 'STOCK', 120, 178.30, 'U123456'),
+    ('GOOGL', 'Alphabet Inc.', 'STOCK', 40, 163.50, 'U123456'),
+    ('NVDA', 'NVIDIA Corporation', 'STOCK', 25, 880.20, 'U123456'),
+    ('IAU', 'iShares Gold Trust', 'ETF', 400, 44.80, 'U234567'),
+    ('SPY', 'SPDR S&P 500 ETF', 'ETF', 55, 525.60, 'U234567'),
+    ('GLD', 'SPDR Gold Shares', 'ETF', 60, 215.30, 'U234567'),
+    ('BND', 'Vanguard Total Bond Market ETF', 'BOND', 200, 71.50, 'U234567'),
+    ('JPM', 'JPMorgan Chase & Co.', 'STOCK', 60, 198.40, 'U123456'),
+    ('ASML', 'ASML Holding NV', 'STOCK', 40, 156.70, 'U345678'),
+    ('TSM', 'Taiwan Semiconductor ADR', 'STOCK', 70, 118.20, 'U345678'),
+    ('SAP', 'SAP SE ADR', 'STOCK', 30, 172.80, 'U345678'),
+    ('RING', 'iShares MSCI Global Gold Miners ETF', 'ETF', 150, 42.50, 'U345678'),
+    ('VTI', 'Vanguard Total Stock Market ETF', 'ETF', 40, 265.30, 'U345678'),
 ]
 
 ACCOUNT_IDS = ['U123456', 'U234567', 'U345678']
@@ -96,13 +96,18 @@ def seed_database(conn) -> None:
     c.execute('''CREATE TABLE daily_snapshot (
         date        TEXT NOT NULL,
         account_id  TEXT NOT NULL,
+        conid       TEXT,
         ticker      TEXT NOT NULL,
         full_name   TEXT,
         asset_class TEXT,
-        sector      TEXT,
+        side        TEXT,
         quantity    REAL,
         market_value REAL,
+        mark_price  REAL,
         cost_price  REAL,
+        cost_basis  REAL,
+        unrealized_pnl REAL,
+        day_pnl     REAL,
         currency    TEXT DEFAULT 'USD',
         PRIMARY KEY (date, account_id, ticker)
     )''')
@@ -125,26 +130,30 @@ def seed_database(conn) -> None:
 
     # Insert daily_snapshot rows
     for aid in ACCOUNT_IDS:
-        holdings = [h for h in MOCK_HOLDINGS if h[6] == aid]
-        total_mv = sum(h[4] * h[5] for h in holdings)
+        holdings = [h for h in MOCK_HOLDINGS if h[5] == aid]
 
         for date_str in date_strs:
             nav_row = next(r for r in nav_data[aid] if r[0] == date_str)
             nav_val = nav_row[1]
             scale = nav_val / 100000  # scale holdings proportionally with NAV
 
-            for ticker, name, aclass, sector, qty, base_price, _ in holdings:
+            for idx, (ticker, name, aclass, qty, base_price, _) in enumerate(holdings):
                 # Add noise to individual prices
-                price = base_price * scale * (0.95 + random.random() * 0.10)
+                price = round(base_price * scale * (0.95 + random.random() * 0.10), 2)
                 mv = round(qty * price, 2)
-                cost = round(base_price * 0.85 * qty, 2)
+                cost_price = round(base_price * 0.85, 2)
+                cost_basis = round(cost_price * qty, 2)
+                day_pnl = round(mv * random.gauss(0, 0.01), 2)
 
                 c.execute('''INSERT INTO daily_snapshot
-                    (date, account_id, ticker, full_name, asset_class, sector,
-                     quantity, market_value, cost_price, currency)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                    (date_str, aid, ticker, name, aclass, sector,
-                     qty, mv, cost, 'USD'))
+                    (date, account_id, conid, ticker, full_name, asset_class,
+                     side, quantity, market_value, mark_price,
+                     cost_price, cost_basis, unrealized_pnl, day_pnl, currency)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                    (date_str, aid, str(100000 + idx), ticker, name, aclass,
+                     'Long', qty, mv, price,
+                     cost_price, cost_basis, round(mv - cost_basis, 2),
+                     day_pnl, 'USD'))
 
     # Insert nav_history rows
     for aid in ACCOUNT_IDS:
@@ -204,22 +213,27 @@ def incremental_update(conn) -> str:
             (next_date, aid, new_nav, new_cash, day_pnl))
 
         # Insert daily_snapshot rows
-        c.execute('''SELECT ticker, full_name, asset_class, sector, quantity,
-                     cost_price, currency, account_id
+        c.execute('''SELECT conid, ticker, full_name, asset_class, side,
+                     quantity, market_value, cost_price, cost_basis, currency,
+                     account_id
                      FROM daily_snapshot WHERE date = ? AND account_id = ?''',
                   (last_date, aid))
         holdings = c.fetchall()
 
-        for ticker, name, aclass, sector, qty, cost, currency, acc_id in holdings:
+        for (conid, ticker, name, aclass, side, qty, prev_mv,
+             cost_price, cost_basis, currency, acc_id) in holdings:
             price_jitter = 1 + random.gauss(0, 0.015)
-            new_mv = round(qty * (0 if not cost else cost * 1.2) * price_jitter, 2)
-            new_mv = max(0, new_mv)
+            new_mv = max(0, round(prev_mv * price_jitter, 2))
+            new_price = round(new_mv / qty, 2) if qty else 0
             c.execute('''INSERT INTO daily_snapshot
-                (date, account_id, ticker, full_name, asset_class, sector,
-                 quantity, market_value, cost_price, currency)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                (next_date, acc_id, ticker, name, aclass, sector,
-                 qty, new_mv, cost, currency))
+                (date, account_id, conid, ticker, full_name, asset_class,
+                 side, quantity, market_value, mark_price,
+                 cost_price, cost_basis, unrealized_pnl, day_pnl, currency)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (next_date, acc_id, conid, ticker, name, aclass,
+                 side, qty, new_mv, new_price,
+                 cost_price, cost_basis, round(new_mv - (cost_basis or 0), 2),
+                 round(new_mv - prev_mv, 2), currency))
 
     c.execute('DELETE FROM config WHERE key = ?', ('last_refresh',))
     c.execute('INSERT INTO config (key, value) VALUES (?, ?)',

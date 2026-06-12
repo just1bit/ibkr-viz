@@ -13,7 +13,6 @@ interface Props {
 
 const VIEWS: { value: DonutView; label: string }[] = [
   { value: 'ticker', label: 'Holdings' },
-  { value: 'sector', label: 'Sector' },
   { value: 'asset_class', label: 'Asset class' },
 ]
 
@@ -105,7 +104,6 @@ export function AllocationCard({ portfolio, hidden }: Props) {
 
 function buildSlices(p: Portfolio, view: DonutView): AllocationSlice[] {
   if (view === 'asset_class') return recolor(p.asset_class_summary)
-  if (view === 'sector') return recolor(p.sector_summary)
 
   const sorted = [...p.ticker_summary].sort((a, b) => b.value - a.value)
   const tot = sorted.reduce((s, d) => s + d.value, 0)
@@ -120,7 +118,6 @@ function buildSlices(p: Portfolio, view: DonutView): AllocationSlice[] {
     out.push({
       name: 'Others',
       value: Math.round(others),
-      pct: (others / tot) * 100,
       color: NEUTRAL_GRAY,
     })
   }
@@ -152,12 +149,17 @@ function donutOption(
       padding: [8, 12],
       textStyle: { color: t.text, fontSize: 12 },
       extraCssText: 'border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.18);',
-      formatter: (p: { name: string; value: number; percent: number; data: { full_name?: string } }) => {
+      formatter: (p: { name: string; value: number; percent: number; data: { full_name?: string; day_pnl?: number } }) => {
         const usd = hidden ? '••••' : '$' + p.value.toLocaleString()
         const fn = p.data?.full_name
           ? `<div style="color:${t.faint};font-size:10px;margin-top:2px">${p.data.full_name}</div>`
           : ''
-        return `<div style="font-weight:600">${p.name}</div>${fn}<div style="margin-top:4px;font-variant-numeric:tabular-nums">${usd} · ${p.percent.toFixed(2)}%</div>`
+        const dp = p.data?.day_pnl
+        const day =
+          dp != null && dp !== 0
+            ? `<div style="margin-top:2px;font-variant-numeric:tabular-nums;color:${dp >= 0 ? '#22a06b' : '#e5484d'}">${dp >= 0 ? '+' : ''}${hidden ? '••••' : '$' + dp.toLocaleString()} today</div>`
+            : ''
+        return `<div style="font-weight:600">${p.name}</div>${fn}<div style="margin-top:4px;font-variant-numeric:tabular-nums">${usd} · ${p.percent.toFixed(2)}%</div>${day}`
       },
     },
     series: [
@@ -187,6 +189,7 @@ function donutOption(
           name: d.name,
           value: d.value,
           full_name: d.full_name,
+          day_pnl: d.day_pnl,
           itemStyle: { color: d.color },
         })),
       },

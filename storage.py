@@ -35,13 +35,18 @@ def init_db(conn):
     c.execute('''CREATE TABLE IF NOT EXISTS daily_snapshot (
         date        TEXT NOT NULL,
         account_id  TEXT NOT NULL,
+        conid       TEXT,
         ticker      TEXT NOT NULL,
         full_name   TEXT,
         asset_class TEXT,
-        sector      TEXT,
+        side        TEXT,
         quantity    REAL,
         market_value REAL,
+        mark_price  REAL,
         cost_price  REAL,
+        cost_basis  REAL,
+        unrealized_pnl REAL,
+        day_pnl     REAL,
         currency    TEXT DEFAULT 'USD',
         PRIMARY KEY (date, account_id, ticker)
     )''')

@@ -193,7 +193,7 @@ def refresh_real_data():
 
     # --- Step 2: Parse (the report date comes from the statement itself) ---
     try:
-        data = flex_parser.parse_flex_xml(xml_text, today)
+        data = flex_parser.parse_flex_xml(xml_text)
     except Exception as e:
         return None, False, f'Parse failed: {e} — raw XML preserved at {local_path}'
     report_date = data['date']
@@ -225,12 +225,15 @@ def refresh_real_data():
 
                 for h in acc['holdings']:
                     c.execute('''INSERT INTO daily_snapshot
-                        (date, account_id, ticker, full_name, asset_class, sector,
-                         quantity, market_value, cost_price, currency)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                        (report_date, aid, h['ticker'], h['full_name'], h['asset_class'],
-                         h['sector'], h['quantity'], h['market_value'],
-                         h['cost_price'], h['currency']))
+                        (date, account_id, conid, ticker, full_name, asset_class,
+                         side, quantity, market_value, mark_price,
+                         cost_price, cost_basis, unrealized_pnl, day_pnl, currency)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                        (report_date, aid, h['conid'], h['ticker'], h['full_name'],
+                         h['asset_class'], h['side'], h['quantity'],
+                         h['market_value'], h['mark_price'], h['cost_price'],
+                         h['cost_basis'], h['unrealized_pnl'], h['day_pnl'],
+                         h['currency']))
 
             set_config_val('account_types', json.dumps(account_types))
 
@@ -267,20 +270,23 @@ def account_summary(cursor, date, account_id):
 
 
 def build_holding(row):
-    """Map a daily_snapshot row to a holding dict with unrealized P&L."""
-    mv, cost, qty = row['market_value'], row['cost_price'], row['quantity']
-    basis = cost * qty if cost and qty else 0
-    pnl = mv - basis if basis else 0
+    """Map a daily_snapshot row to the API holding dict.
+
+    Every figure is the statement's own value — unrealized P&L comes from
+    fifoPnlUnrealized and day P&L from the MTM summary, not local math."""
     return {
+        'conid': row['conid'],
         'ticker': row['ticker'],
         'full_name': row['full_name'],
         'asset_class': row['asset_class'],
-        'sector': row['sector'] or 'Other',
-        'quantity': qty,
-        'market_value': mv,
-        'cost_price': cost,
-        'unrealized_pnl': round(pnl, 2),
-        'unrealized_pnl_pct': round(pnl / basis * 100, 2) if basis > 0 else 0,
+        'side': row['side'],
+        'quantity': row['quantity'],
+        'market_value': row['market_value'],
+        'mark_price': row['mark_price'],
+        'cost_price': row['cost_price'],
+        'cost_basis': row['cost_basis'],
+        'unrealized_pnl': row['unrealized_pnl'],
+        'day_pnl': row['day_pnl'],
         'currency': row['currency'],
         'account_id': row['account_id'],
     }
@@ -289,24 +295,21 @@ def build_holding(row):
 def cash_holding(amount, account_id):
     """Cash represented as a holding so it joins the allocation breakdown."""
     return {
-        'ticker': 'CASH', 'full_name': 'Cash', 'asset_class': 'CASH', 'sector': 'Cash',
-        'quantity': amount, 'market_value': amount, 'cost_price': None,
-        'unrealized_pnl': 0, 'unrealized_pnl_pct': 0, 'currency': 'USD',
+        'conid': '', 'ticker': 'CASH', 'full_name': 'Cash', 'asset_class': 'CASH',
+        'side': '', 'quantity': amount, 'market_value': amount,
+        'mark_price': None, 'cost_price': None, 'cost_basis': None,
+        'unrealized_pnl': 0, 'day_pnl': 0, 'currency': 'USD',
         'account_id': account_id,
     }
 
 
-def group_summary(holdings, field, total):
-    """Sum holdings by a field (asset_class / sector), sorted by value desc."""
+def group_summary(holdings, field):
+    """Sum holdings by a field (e.g. asset_class), sorted by value desc."""
     sums = defaultdict(float)
     for h in holdings:
         sums[h[field] or 'Other'] += h['market_value']
     return [
-        {
-            'name': name,
-            'value': round(value, 2),
-            'pct': round(value / total * 100, 2) if total else 0,
-        }
+        {'name': name, 'value': round(value, 2)}
         for name, value in sorted(sums.items(), key=lambda kv: kv[1], reverse=True)
     ]
 
@@ -384,15 +387,11 @@ def get_portfolio():
     holdings = [build_holding(r) for r in rows]
     securities_value = sum(h['market_value'] for h in holdings)
 
-    # Cash is a first-class holding. Weights are taken against securities + cash,
-    # so every slice (cash included) sums to 100%.
+    # Cash is a first-class holding, so every allocation slice (cash included)
+    # sums to 100% of securities + cash. Percentages are computed client-side.
     cash_value = round(max(summary['total_cash'], 0), 2)
-    alloc_total = securities_value + cash_value
     if cash_value > 0:
         holdings.append(cash_holding(cash_value, account_id))
-
-    for h in holdings:
-        h['weight'] = round(h['market_value'] / alloc_total * 100, 2) if alloc_total else 0
     holdings.sort(key=lambda h: h['market_value'], reverse=True)
 
     return jsonify({
@@ -402,21 +401,17 @@ def get_portfolio():
         'holdings': holdings,
         'summary': {
             'total_value': round(securities_value, 2),
-            'allocation_total': round(alloc_total, 2),
             'net_liquidation': round(summary['total_nav'], 2),
             'total_cash': round(summary['total_cash'], 2),
             'total_day_pnl': round(summary['total_day_pnl'], 2),
-            'cash_gap': round(summary['total_nav'] - securities_value, 2),
         },
-        'asset_class_summary': group_summary(holdings, 'asset_class', alloc_total),
-        'sector_summary': group_summary(holdings, 'sector', alloc_total),
+        'asset_class_summary': group_summary(holdings, 'asset_class'),
         'ticker_summary': [
             {
                 'name': h['ticker'],
                 'value': h['market_value'],
-                'pct': h['weight'],
                 'full_name': h['full_name'],
-                'asset_class': h['asset_class'],
+                'day_pnl': h['day_pnl'],
             }
             for h in holdings
         ],

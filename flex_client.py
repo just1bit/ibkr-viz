@@ -74,7 +74,6 @@ def get_flex_xml(
         raise FlexClientError("No ReferenceCode found in SendRequest response")
 
     # Step 2: Poll for statement
-    base_code = ref_code
     poll_interval = 3
     waited = 0
 
@@ -84,7 +83,7 @@ def get_flex_xml(
 
         try:
             resp = requests.get(FLEX_STATEMENT_URL, params={
-                't': token, 'q': base_code, 'v': '3'
+                't': token, 'q': ref_code, 'v': '3'
             }, timeout=15)
             resp.raise_for_status()
         except requests.RequestException as e:
