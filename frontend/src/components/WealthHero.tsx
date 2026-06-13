@@ -29,9 +29,7 @@ export function WealthHero({ portfolio, hidden }: Props) {
 
       <div className="mt-2">
         <p
-          className={`text-[30px] font-bold leading-none tabular-nums sm:text-[34px] ${pnlTone} ${
-            hidden ? 'masked' : ''
-          }`}
+          className={`text-[30px] font-bold leading-none tabular-nums sm:text-[34px] ${pnlTone}`}
         >
           {fmtPct(dayRate)}
         </p>

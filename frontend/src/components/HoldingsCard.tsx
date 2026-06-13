@@ -31,7 +31,7 @@ const round1 = (n: number) => Math.round(n * 10) / 10
  * table on the right. Only ticker-level allocation. Hover links the donut
  * sector to its table row and vice versa.
  *
- * Columns: Holding | Weight | Day% | Day P/L | Value | Target | Drift | Action
+ * Columns: Holding | Value | Day P/L | Day% | Weight | Target | Drift | Action
  * Qty, price, full name appear in a row-hover tooltip.
  */
 export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props) {
@@ -41,7 +41,6 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
   const [hoverRow, setHoverRow] = useState<string | null>(null)
 
   const showAccount = portfolio.account_id === 'ALL'
-  const hasCost = portfolio.holdings.some((h) => (h.cost_basis ?? 0) !== 0)
   const totalValue = portfolio.holdings.reduce((s, h) => s + h.market_value, 0)
 
   // ── Sorted holdings ──
@@ -156,7 +155,7 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
             Targets {targetSum.toFixed(1)}%
           </span>
           <button onClick={reset} className="rounded-[8px] px-2 py-0.5 text-[11px] font-medium text-faint transition-colors hover:text-text">Reset</button>
-          <button onClick={save} disabled={saving || !dirty} className="rounded-[8px] bg-accent px-2.5 py-0.5 text-[11px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40">
+          <button onClick={save} disabled={saving || !dirty || !balanced} className="rounded-[8px] bg-accent px-2.5 py-0.5 text-[11px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40">
             {saving ? 'Saving…' : 'Save'}
           </button>
         </div>
@@ -205,8 +204,7 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
                 <Th label="Value" align="right" active={sortKey === 'value'} onClick={() => onSort('value')} />
                 <Th label="Day P/L" align="right" active={sortKey === 'day_pnl'} onClick={() => onSort('day_pnl')} />
                 <Th label="Day%" align="right" active={sortKey === 'day_pct'} onClick={() => onSort('day_pct')} />
-                <Th label="Wgt" align="right" />
-                {hasCost && <Th label="Unreal." align="right" />}
+                <Th label="Weight" align="right" />
                 <Th label="Target" align="right" />
                 <Th label="Drift" align="right" />
                 <Th label="Action" align="right" />
@@ -265,16 +263,15 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
                         <span className="w-10 tabular-nums text-muted">{cur.toFixed(1)}%</span>
                       </div>
                     </Td>
-                    {hasCost && (
-                      <Td align="right" className={`${tone(h.unrealized_pnl)} ${hidden ? 'masked' : ''}`}>
-                        {(h.cost_basis ?? 0) === 0 ? '—' : `${h.unrealized_pnl >= 0 ? '+' : ''}${fmtUSDFull(h.unrealized_pnl, hidden)}`}
-                      </Td>
-                    )}
                     <Td align="right">
                       <input
-                        type="number" inputMode="decimal" min={0} step={0.5}
+                        type="number" inputMode="numeric" min={0} step={1}
                         value={edits[sym] ?? ''}
                         onChange={(e) => setEdits((p) => ({ ...p, [sym]: e.target.value }))}
+                        onBlur={(e) => {
+                          const v = parseFloat(e.target.value)
+                          if (Number.isFinite(v)) setEdits((p) => ({ ...p, [sym]: String(Math.round(v)) }))
+                        }}
                         className="w-14 rounded-[6px] border border-border bg-surface-2 px-1.5 py-0.5 text-right tabular-nums text-[12px] text-text outline-none focus:border-accent"
                       />
                     </Td>
