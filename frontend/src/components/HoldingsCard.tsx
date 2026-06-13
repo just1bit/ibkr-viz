@@ -187,8 +187,8 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
               </>
             ) : (
               <>
-                <span className="text-[10px] uppercase tracking-wide text-faint">Total</span>
-                <span className={`mt-1 text-[18px] font-semibold tabular-nums text-text ${hidden ? 'masked' : ''}`}>
+                <span className="text-[14px] uppercase tracking-wide text-faint">Total</span>
+                <span className={`mt-1 text-[20px] font-bold tabular-nums text-text ${hidden ? 'masked' : ''}`}>
                   {fmtUSD(totalValue + cashValue, hidden)}
                 </span>
               </>
