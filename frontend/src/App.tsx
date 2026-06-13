@@ -5,6 +5,10 @@ import { useDashboard } from './hooks/useDashboard'
 import { Header } from './components/Header'
 import { KpiCards } from './components/KpiCards'
 import { AllocationCard } from './components/AllocationCard'
+import { DayPnlCard } from './components/DayPnlCard'
+import { PositionsCard } from './components/PositionsCard'
+import { NavCompositionCard } from './components/NavCompositionCard'
+import { CashFlowCard } from './components/CashFlowCard'
 import { RebalanceCard } from './components/RebalanceCard'
 import { Skeleton } from './components/Skeleton'
 
@@ -63,14 +67,38 @@ export default function App() {
         ) : portfolio ? (
           <div className="space-y-4 sm:space-y-5">
             <KpiCards portfolio={portfolio} hidden={hidden} />
-            <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-2 sm:gap-5">
-              <AllocationCard portfolio={portfolio} hidden={hidden} />
-              <RebalanceCard
-                portfolio={portfolio}
-                savedTargets={targets}
-                onSave={saveTargets}
-                hidden={hidden}
-              />
+
+            {/* Today: allocation snapshot + what moved the book */}
+            <div className="grid grid-cols-1 items-stretch gap-4 sm:gap-5 lg:grid-cols-12">
+              <div className="lg:col-span-5">
+                <AllocationCard portfolio={portfolio} hidden={hidden} />
+              </div>
+              <div className="lg:col-span-7">
+                <DayPnlCard portfolio={portfolio} hidden={hidden} />
+              </div>
+            </div>
+
+            {/* Detail: every statement figure per holding */}
+            <PositionsCard portfolio={portfolio} hidden={hidden} />
+
+            {/* Plan & context: rebalance + NAV breakdown + income/costs */}
+            <div className="grid grid-cols-1 items-stretch gap-4 sm:gap-5 lg:grid-cols-12">
+              <div className="lg:col-span-7">
+                <RebalanceCard
+                  portfolio={portfolio}
+                  savedTargets={targets}
+                  onSave={saveTargets}
+                  hidden={hidden}
+                />
+              </div>
+              <div className="flex flex-col gap-4 sm:gap-5 lg:col-span-5">
+                <NavCompositionCard
+                  portfolio={portfolio}
+                  accounts={accounts}
+                  hidden={hidden}
+                />
+                <CashFlowCard portfolio={portfolio} hidden={hidden} />
+              </div>
             </div>
           </div>
         ) : (

@@ -12,14 +12,17 @@ interface Kpi {
   label: string
   value: string
   delta?: string
+  deltaTone?: Tone
   tone?: Tone
   mask?: boolean
 }
 
 export function KpiCards({ portfolio, hidden }: Props) {
   const s = portfolio.summary
+  const e = portfolio.equity
   const netLiq = s.net_liquidation
   const dayRate = netLiq ? (s.total_day_pnl / (netLiq - s.total_day_pnl)) * 100 : 0
+  const accruals = e.dividend_accruals + e.interest_accruals
 
   const cards: Kpi[] = [
     { label: 'Net asset value', value: fmtUSD(netLiq, hidden), mask: true },
@@ -30,8 +33,26 @@ export function KpiCards({ portfolio, hidden }: Props) {
       tone: s.total_day_pnl >= 0 ? 'pos' : 'neg',
       mask: true,
     },
-    { label: 'Market value', value: fmtUSD(s.total_value, hidden), mask: true },
-    { label: 'Cash balance', value: fmtUSD(s.total_cash, hidden), mask: true },
+    {
+      label: 'Market value',
+      value: fmtUSD(s.total_value, hidden),
+      delta:
+        e.options !== 0
+          ? `Stocks ${fmtUSD(e.stock, hidden)} · Options ${fmtUSD(e.options, hidden)}`
+          : undefined,
+      deltaTone: 'neutral',
+      mask: true,
+    },
+    {
+      label: 'Cash balance',
+      value: fmtUSD(s.total_cash, hidden),
+      delta:
+        accruals !== 0
+          ? `Accruals ${accruals >= 0 ? '+' : ''}${fmtUSD(accruals, hidden)}`
+          : undefined,
+      deltaTone: 'neutral',
+      mask: true,
+    },
   ]
 
   return (
@@ -77,9 +98,9 @@ function KpiCard({
       </div>
       {kpi.delta && (
         <div
-          className={`mt-1.5 text-[12px] font-medium tnum ${toneText[tone]} ${
-            masked ? 'masked' : 'opacity-80'
-          }`}
+          className={`mt-1.5 text-[12px] font-medium tnum ${
+            kpi.deltaTone === 'neutral' ? 'text-muted' : toneText[tone]
+          } ${masked ? 'masked' : 'opacity-80'}`}
         >
           {kpi.delta}
         </div>

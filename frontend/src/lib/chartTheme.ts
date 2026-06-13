@@ -23,6 +23,8 @@ export interface ChartTheme {
   border: string
   surface: string
   accent: string
+  pos: string
+  neg: string
   tooltipBg: string
   tooltipBorder: string
   splitLine: string
@@ -49,6 +51,8 @@ export function getChartTheme(): ChartTheme {
     border: readVar('--border'),
     surface: readVar('--surface'),
     accent: readVar('--accent'),
+    pos: readVar('--pos'),
+    neg: readVar('--neg'),
     tooltipBg: isDark ? 'rgba(18,18,21,0.96)' : 'rgba(255,255,255,0.98)',
     tooltipBorder: readVar('--border-strong'),
     splitLine: rgba('--border', isDark ? 0.6 : 1),

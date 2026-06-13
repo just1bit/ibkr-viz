@@ -23,10 +23,9 @@ export function AccountSelect({ accounts, value, onChange, hidden }: Props) {
     return () => document.removeEventListener('mousedown', onDoc)
   }, [open])
 
+  const selected = accounts.find((a) => a.account_id === value)
   const label =
-    value === 'ALL'
-      ? 'All accounts'
-      : value
+    value === 'ALL' ? 'All accounts' : selected?.alias || value
 
   return (
     <div className="relative" ref={ref}>
@@ -55,7 +54,8 @@ export function AccountSelect({ accounts, value, onChange, hidden }: Props) {
           {accounts.map((a) => (
             <Row
               key={a.account_id}
-              label={a.account_id}
+              label={a.alias || a.account_id}
+              meta={a.alias ? a.account_id : undefined}
               sub={fmtUSD(a.net_liquidation, hidden)}
               tag={a.account_type}
               active={value === a.account_id}
@@ -73,12 +73,14 @@ export function AccountSelect({ accounts, value, onChange, hidden }: Props) {
 
 function Row({
   label,
+  meta,
   sub,
   tag,
   active,
   onClick,
 }: {
   label: string
+  meta?: string
   sub: string
   tag?: string
   active: boolean
@@ -94,7 +96,10 @@ function Row({
       <span className="flex h-4 w-4 shrink-0 items-center justify-center text-accent">
         {active && <CheckIcon className="h-4 w-4" />}
       </span>
-      <span className="flex-1 tnum text-[13px] font-medium text-text">{label}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] font-medium text-text">{label}</span>
+        {meta && <span className="block tnum text-[10px] text-faint">{meta}</span>}
+      </span>
       {tag && (
         <span className="rounded-full border border-border px-1.5 py-0.5 text-[9px] font-semibold tracking-wide text-faint">
           {tag}

@@ -29,10 +29,9 @@ def connect(config):
         return conn
 
 
-def init_db(conn):
-    """Create tables if they don't exist. Works on SQLite and PostgreSQL."""
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS daily_snapshot (
+# Shared between init_db and mock_data's seed (which drops + recreates).
+SCHEMA = {
+    'daily_snapshot': '''(
         date        TEXT NOT NULL,
         account_id  TEXT NOT NULL,
         conid       TEXT,
@@ -47,21 +46,63 @@ def init_db(conn):
         cost_basis  REAL,
         unrealized_pnl REAL,
         day_pnl     REAL,
+        prev_close_price REAL,
+        prev_close_quantity REAL,
+        multiplier  REAL,
+        strike      REAL,
+        expiry      TEXT,
+        put_call    TEXT,
+        underlying_symbol TEXT,
+        listing_exchange  TEXT,
         currency    TEXT DEFAULT 'USD',
         PRIMARY KEY (date, account_id, ticker)
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS nav_history (
+    )''',
+    'nav_history': '''(
         date            TEXT NOT NULL,
         account_id      TEXT NOT NULL,
         net_liquidation REAL,
         cash_balance    REAL,
+        stock_value     REAL,
+        options_value   REAL,
+        dividend_accruals REAL,
+        interest_accruals REAL,
         day_pnl         REAL,
         PRIMARY KEY (date, account_id)
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS config (
+    )''',
+    'account_info': '''(
+        account_id     TEXT PRIMARY KEY,
+        alias          TEXT,
+        account_type   TEXT,
+        syep           TEXT,
+        drip           TEXT,
+        tax_lot_method TEXT,
+        date_opened    TEXT
+    )''',
+    'cash_report': '''(
+        date       TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        commissions_mtd REAL, commissions_ytd REAL,
+        broker_interest_mtd REAL, broker_interest_ytd REAL,
+        dividends_mtd REAL, dividends_ytd REAL,
+        payment_in_lieu_mtd REAL, payment_in_lieu_ytd REAL,
+        withholding_tax_mtd REAL, withholding_tax_ytd REAL,
+        deposit_withdrawals_mtd REAL, deposit_withdrawals_ytd REAL,
+        net_trades_sales_mtd REAL, net_trades_sales_ytd REAL,
+        net_trades_purchases_mtd REAL, net_trades_purchases_ytd REAL,
+        PRIMARY KEY (date, account_id)
+    )''',
+    'config': '''(
         key   TEXT PRIMARY KEY,
         value TEXT
-    )''')
+    )''',
+}
+
+
+def init_db(conn):
+    """Create tables if they don't exist. Works on SQLite and PostgreSQL."""
+    c = conn.cursor()
+    for table, body in SCHEMA.items():
+        c.execute(f'CREATE TABLE IF NOT EXISTS {table} {body}')
     conn.commit()
 
 

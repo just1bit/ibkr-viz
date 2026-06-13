@@ -7,13 +7,18 @@ attribute is a data problem in the Flex query, not something to paper over.
 
   FlexQueryResponse
     └── FlexStatement (one per account)
-          ├── AccountInformation                     → account type
+          ├── AccountInformation                     → alias, type, SYEP/DRIP flags
           ├── EquitySummaryInBase
-          │     └── EquitySummaryByReportDateInBase  → NAV, ledger cash
+          │     └── EquitySummaryByReportDateInBase  → NAV components (stock,
+          │                                            options, cash, accruals)
           ├── MTMPerformanceSummaryInBase
-          │     └── MTMPerformanceSummaryUnderlying  → day P&L (account + per position)
+          │     └── MTMPerformanceSummaryUnderlying  → day P&L (account + per
+          │                                            position), prev close
+          ├── CashReport
+          │     └── CashReportCurrency               → MTD/YTD income & costs
           └── OpenPositions
-                └── OpenPosition                     → holdings
+                └── OpenPosition                     → holdings (incl. option
+                                                       contract terms)
 
 Usage:
     data = parse_flex_xml(xml_text)
@@ -29,6 +34,26 @@ CATEGORY_MAP = {
     'FUT': 'FUTURE',
     'BOND': 'BOND',
     'CASH': 'CASH',
+}
+
+# DB column → XML attribute on the BASE_SUMMARY CashReportCurrency row.
+CASH_REPORT_FIELDS = {
+    'commissions_mtd': 'commissionsMTD',
+    'commissions_ytd': 'commissionsYTD',
+    'broker_interest_mtd': 'brokerInterestMTD',
+    'broker_interest_ytd': 'brokerInterestYTD',
+    'dividends_mtd': 'dividendsMTD',
+    'dividends_ytd': 'dividendsYTD',
+    'payment_in_lieu_mtd': 'paymentInLieuMTD',
+    'payment_in_lieu_ytd': 'paymentInLieuYTD',
+    'withholding_tax_mtd': 'withholdingTaxMTD',
+    'withholding_tax_ytd': 'withholdingTaxYTD',
+    'deposit_withdrawals_mtd': 'depositWithdrawalsMTD',
+    'deposit_withdrawals_ytd': 'depositWithdrawalsYTD',
+    'net_trades_sales_mtd': 'netTradesSalesMTD',
+    'net_trades_sales_ytd': 'netTradesSalesYTD',
+    'net_trades_purchases_mtd': 'netTradesPurchasesMTD',
+    'net_trades_purchases_ytd': 'netTradesPurchasesYTD',
 }
 
 
@@ -64,17 +89,18 @@ def parse_flex_xml(xml_text: str) -> Dict:
 
     Returns:
         {'date': str, 'accounts': [{
-            'account_id': str,
-            'account_type': 'MARGIN' | 'CASH',
-            'net_liquidation': float,
-            'cash_balance': float,
-            'day_pnl': float,
+            'account_id', 'alias', 'account_type',
+            'syep', 'drip', 'tax_lot_method', 'date_opened',
+            'net_liquidation', 'cash_balance', 'stock_value', 'options_value',
+            'dividend_accruals', 'interest_accruals', 'day_pnl',
+            'cash_report': {<CASH_REPORT_FIELDS keys>},
             'holdings': [{
-                'conid': str, 'ticker': str, 'full_name': str,
-                'asset_class': str, 'side': str,
-                'quantity': float, 'market_value': float, 'mark_price': float,
-                'cost_price': float, 'cost_basis': float,
-                'unrealized_pnl': float, 'day_pnl': float, 'currency': str
+                'conid', 'ticker', 'full_name', 'asset_class', 'side',
+                'quantity', 'market_value', 'mark_price',
+                'cost_price', 'cost_basis', 'unrealized_pnl',
+                'day_pnl', 'prev_close_price', 'prev_close_quantity',
+                'multiplier', 'strike', 'expiry', 'put_call',
+                'underlying_symbol', 'listing_exchange', 'currency'
             }]
         }]}
     """
@@ -86,15 +112,13 @@ def parse_flex_xml(xml_text: str) -> Dict:
         account_id = stmt.get('accountId', '')
         report_dates.append(_statement_date(stmt))
 
-        caps = stmt.find('AccountInformation').get('accountCapabilities', '').upper()
-        account_type = 'CASH' if caps == 'CASH' else 'MARGIN'
+        info = stmt.find('AccountInformation')
+        caps = info.get('accountCapabilities', '').upper()
 
-        # --- NAV + ledger cash: latest EquitySummary row (NAV basis:
+        # --- NAV components: latest EquitySummary row (NAV basis:
         #     cash + positions + accruals == total) ---
         es_rows = list(stmt.find('EquitySummaryInBase'))
         latest_es = max(es_rows, key=lambda e: e.get('reportDate', ''))
-        net_liq = _num(latest_es, 'total')
-        cash_balance = _num(latest_es, 'cash')
 
         # --- Day P&L from MTM performance: the blank-symbol row is the
         #     account total IBKR reports directly; named rows are per
@@ -103,13 +127,27 @@ def parse_flex_xml(xml_text: str) -> Dict:
         mtm_by_conid = {}
         for row in stmt.find('MTMPerformanceSummaryInBase'):
             if (row.get('symbol') or '').strip():
-                mtm_by_conid[row.get('conid', '')] = round(_num(row, 'total'), 2)
+                mtm_by_conid[row.get('conid', '')] = {
+                    'day_pnl': round(_num(row, 'total'), 2),
+                    'prev_close_price': _num(row, 'prevClosePrice'),
+                    'prev_close_quantity': _num(row, 'prevCloseQuantity'),
+                }
             else:
                 day_pnl = round(_num(row, 'total'), 2)
+
+        # --- MTD/YTD income & costs: the BASE_SUMMARY CashReport row ---
+        cash_report = {k: 0.0 for k in CASH_REPORT_FIELDS}
+        for row in stmt.find('CashReport'):
+            if row.get('levelOfDetail') == 'BaseCurrency':
+                cash_report = {
+                    col: round(_num(row, attr), 2)
+                    for col, attr in CASH_REPORT_FIELDS.items()
+                }
 
         holdings = []
         for pos in stmt.find('OpenPositions'):
             conid = pos.get('conid', '')
+            mtm = mtm_by_conid.get(conid, {})
             holdings.append({
                 'conid': conid,
                 'ticker': pos.get('symbol', ''),
@@ -123,16 +161,34 @@ def parse_flex_xml(xml_text: str) -> Dict:
                 'cost_price': _num(pos, 'costBasisPrice'),
                 'cost_basis': _num(pos, 'costBasisMoney'),
                 'unrealized_pnl': _num(pos, 'fifoPnlUnrealized'),
-                'day_pnl': mtm_by_conid.get(conid, 0.0),
+                'day_pnl': mtm.get('day_pnl', 0.0),
+                'prev_close_price': mtm.get('prev_close_price', 0.0),
+                'prev_close_quantity': mtm.get('prev_close_quantity', 0.0),
+                'multiplier': _num(pos, 'multiplier'),
+                'strike': _num(pos, 'strike'),
+                'expiry': pos.get('expiry', ''),
+                'put_call': pos.get('putCall', ''),
+                'underlying_symbol': pos.get('underlyingSymbol', ''),
+                'listing_exchange': pos.get('listingExchange', ''),
                 'currency': pos.get('currency', 'USD'),
             })
 
         accounts.append({
             'account_id': account_id,
-            'account_type': account_type,
-            'net_liquidation': round(net_liq, 2),
-            'cash_balance': round(cash_balance, 2),
+            'alias': info.get('acctAlias', ''),
+            'account_type': 'CASH' if caps == 'CASH' else 'MARGIN',
+            'syep': info.get('syepEnrollmentStatus', ''),
+            'drip': info.get('dividendReinvestmentEnabled', ''),
+            'tax_lot_method': info.get('taxLotMatchingMethod', ''),
+            'date_opened': info.get('dateOpened', ''),
+            'net_liquidation': round(_num(latest_es, 'total'), 2),
+            'cash_balance': round(_num(latest_es, 'cash'), 2),
+            'stock_value': round(_num(latest_es, 'stock'), 2),
+            'options_value': round(_num(latest_es, 'options'), 2),
+            'dividend_accruals': round(_num(latest_es, 'dividendAccruals'), 2),
+            'interest_accruals': round(_num(latest_es, 'interestAccruals'), 2),
             'day_pnl': day_pnl,
+            'cash_report': cash_report,
             'holdings': holdings,
         })
 

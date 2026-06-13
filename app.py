@@ -98,13 +98,6 @@ def set_config_val(key, value):
     storage.set_config_val(conn, key, value)
     conn.close()
 
-def get_account_types():
-    raw = get_config_val('account_types', '{}')
-    try:
-        return json.loads(raw)
-    except Exception:
-        return {}
-
 def _expected_report_date(now_mkt):
     """Newest report date IBKR should have published by `now_mkt`.
 
@@ -122,6 +115,62 @@ def _expected_report_date(now_mkt):
     while d.weekday() >= 5:  # Sat/Sun → previous Friday
         d -= timedelta(days=1)
     return d.strftime('%Y-%m-%d')
+
+
+def store_report(conn, data, report_date):
+    """Insert one parsed Flex report into the database (no commit).
+
+    Writes nav_history (NAV components), daily_snapshot, cash_report rows
+    keyed by the report date, and upserts the per-account profile into
+    account_info. Also used by the standalone re-ingest path, so it must not
+    depend on request context.
+    """
+    c = conn.cursor()
+    for acc in data['accounts']:
+        aid = acc['account_id']
+
+        c.execute('''INSERT INTO nav_history
+            (date, account_id, net_liquidation, cash_balance, stock_value,
+             options_value, dividend_accruals, interest_accruals, day_pnl)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (report_date, aid, acc['net_liquidation'], acc['cash_balance'],
+             acc['stock_value'], acc['options_value'],
+             acc['dividend_accruals'], acc['interest_accruals'],
+             acc['day_pnl']))
+
+        cr = acc['cash_report']
+        cols = list(cr.keys())
+        c.execute(f'''INSERT INTO cash_report
+            (date, account_id, {', '.join(cols)})
+            VALUES ({', '.join(['?'] * (len(cols) + 2))})''',
+            [report_date, aid] + [cr[k] for k in cols])
+
+        c.execute('DELETE FROM account_info WHERE account_id = ?', (aid,))
+        c.execute('''INSERT INTO account_info
+            (account_id, alias, account_type, syep, drip, tax_lot_method,
+             date_opened)
+            VALUES (?, ?, ?, ?, ?, ?, ?)''',
+            (aid, acc['alias'], acc['account_type'], acc['syep'], acc['drip'],
+             acc['tax_lot_method'], acc['date_opened']))
+
+        for h in acc['holdings']:
+            c.execute('''INSERT INTO daily_snapshot
+                (date, account_id, conid, ticker, full_name, asset_class,
+                 side, quantity, market_value, mark_price,
+                 cost_price, cost_basis, unrealized_pnl, day_pnl,
+                 prev_close_price, prev_close_quantity, multiplier,
+                 strike, expiry, put_call, underlying_symbol,
+                 listing_exchange, currency)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (report_date, aid, h['conid'], h['ticker'], h['full_name'],
+                 h['asset_class'], h['side'], h['quantity'],
+                 h['market_value'], h['mark_price'], h['cost_price'],
+                 h['cost_basis'], h['unrealized_pnl'], h['day_pnl'],
+                 h['prev_close_price'], h['prev_close_quantity'],
+                 h['multiplier'], h['strike'], h['expiry'], h['put_call'],
+                 h['underlying_symbol'], h['listing_exchange'],
+                 h['currency']))
 
 
 def refresh_real_data():
@@ -212,30 +261,7 @@ def refresh_real_data():
         already_stored = c.fetchone()['cnt'] > 0
 
         if not already_stored:
-            account_types = get_account_types()
-            for acc in data['accounts']:
-                aid = acc['account_id']
-                account_types[aid] = acc.get('account_type', 'MARGIN')
-
-                c.execute('''INSERT INTO nav_history
-                    (date, account_id, net_liquidation, cash_balance, day_pnl)
-                    VALUES (?, ?, ?, ?, ?)''',
-                    (report_date, aid, acc['net_liquidation'], acc['cash_balance'],
-                     acc['day_pnl']))
-
-                for h in acc['holdings']:
-                    c.execute('''INSERT INTO daily_snapshot
-                        (date, account_id, conid, ticker, full_name, asset_class,
-                         side, quantity, market_value, mark_price,
-                         cost_price, cost_basis, unrealized_pnl, day_pnl, currency)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                        (report_date, aid, h['conid'], h['ticker'], h['full_name'],
-                         h['asset_class'], h['side'], h['quantity'],
-                         h['market_value'], h['mark_price'], h['cost_price'],
-                         h['cost_basis'], h['unrealized_pnl'], h['day_pnl'],
-                         h['currency']))
-
-            set_config_val('account_types', json.dumps(account_types))
+            store_report(conn, data, report_date)
 
         set_config_val('last_refresh', report_date)
         conn.commit()
@@ -253,20 +279,38 @@ def refresh_real_data():
 # Portfolio builders (colors are assigned by the frontend, not here)
 # ---------------------------------------------------------------------------
 def account_summary(cursor, date, account_id):
-    """NAV / cash / P&L totals for one account, or all accounts merged.
+    """NAV components / P&L totals for one account, or all accounts merged.
 
     Always returns numeric values (missing rows default to 0)."""
+    cols = ('net_liquidation', 'cash_balance', 'stock_value', 'options_value',
+            'dividend_accruals', 'interest_accruals', 'day_pnl')
+    select = ', '.join(f'SUM({c}) AS {c}' for c in cols)
     if account_id == 'ALL':
-        cursor.execute('''SELECT SUM(net_liquidation) AS total_nav, SUM(cash_balance) AS total_cash,
-                          SUM(day_pnl) AS total_day_pnl
-                          FROM nav_history WHERE date = ?''', (date,))
+        cursor.execute(f'SELECT {select} FROM nav_history WHERE date = ?', (date,))
     else:
-        cursor.execute('''SELECT net_liquidation AS total_nav, cash_balance AS total_cash,
-                          day_pnl AS total_day_pnl
-                          FROM nav_history WHERE date = ? AND account_id = ?''', (date, account_id))
+        cursor.execute(f'''SELECT {select} FROM nav_history
+                           WHERE date = ? AND account_id = ?''', (date, account_id))
     row = cursor.fetchone()
-    keys = ('total_nav', 'total_cash', 'total_day_pnl')
-    return {k: (row[k] if row and row[k] is not None else 0) for k in keys}
+    return {c: round(row[c], 2) if row and row[c] is not None else 0 for c in cols}
+
+
+def cash_report_summary(cursor, date, account_id):
+    """MTD/YTD income & cost figures, merged across the selected scope."""
+    cols = list(flex_parser.CASH_REPORT_FIELDS.keys())
+    select = ', '.join(f'SUM({c}) AS {c}' for c in cols)
+    if account_id == 'ALL':
+        cursor.execute(f'SELECT {select} FROM cash_report WHERE date = ?', (date,))
+    else:
+        cursor.execute(f'''SELECT {select} FROM cash_report
+                           WHERE date = ? AND account_id = ?''', (date, account_id))
+    row = cursor.fetchone()
+    return {c: round(row[c], 2) if row and row[c] is not None else 0 for c in cols}
+
+
+def get_account_info(cursor):
+    """account_id → profile row from account_info, as plain dicts."""
+    cursor.execute('SELECT * FROM account_info')
+    return {r['account_id']: dict(r) for r in cursor.fetchall()}
 
 
 def build_holding(row):
@@ -287,6 +331,14 @@ def build_holding(row):
         'cost_basis': row['cost_basis'],
         'unrealized_pnl': row['unrealized_pnl'],
         'day_pnl': row['day_pnl'],
+        'prev_close_price': row['prev_close_price'],
+        'prev_close_quantity': row['prev_close_quantity'],
+        'multiplier': row['multiplier'],
+        'strike': row['strike'],
+        'expiry': row['expiry'],
+        'put_call': row['put_call'],
+        'underlying_symbol': row['underlying_symbol'],
+        'listing_exchange': row['listing_exchange'],
         'currency': row['currency'],
         'account_id': row['account_id'],
     }
@@ -298,7 +350,10 @@ def cash_holding(amount, account_id):
         'conid': '', 'ticker': 'CASH', 'full_name': 'Cash', 'asset_class': 'CASH',
         'side': '', 'quantity': amount, 'market_value': amount,
         'mark_price': None, 'cost_price': None, 'cost_basis': None,
-        'unrealized_pnl': 0, 'day_pnl': 0, 'currency': 'USD',
+        'unrealized_pnl': 0, 'day_pnl': 0,
+        'prev_close_price': None, 'prev_close_quantity': None,
+        'multiplier': None, 'strike': None, 'expiry': '', 'put_call': '',
+        'underlying_symbol': '', 'listing_exchange': '', 'currency': 'USD',
         'account_id': account_id,
     }
 
@@ -340,17 +395,23 @@ def get_accounts():
         ORDER BY n.account_id
     ''')
     rows = c.fetchall()
+    info = get_account_info(c)
     conn.close()
 
-    account_types = get_account_types()
     accounts = []
     for r in rows:
+        i = info.get(r['account_id'], {})
         accounts.append({
             'account_id': r['account_id'],
             'net_liquidation': r['net_liquidation'],
             'date': r['date'],
             'day_pnl': r['day_pnl'],
-            'account_type': account_types.get(r['account_id'], 'MARGIN'),
+            'alias': i.get('alias', ''),
+            'account_type': i.get('account_type', 'MARGIN'),
+            'syep': i.get('syep', ''),
+            'drip': i.get('drip', ''),
+            'tax_lot_method': i.get('tax_lot_method', ''),
+            'date_opened': i.get('date_opened', ''),
         })
     return jsonify({'accounts': accounts})
 
@@ -379,9 +440,11 @@ def get_portfolio():
         return jsonify({'error': 'No holdings found'}), 404
 
     summary = account_summary(c, latest_date, account_id)
+    cash_report = cash_report_summary(c, latest_date, account_id)
 
     c.execute('SELECT DISTINCT account_id FROM daily_snapshot WHERE date = ?', (latest_date,))
     account_ids = [r['account_id'] for r in c.fetchall()]
+    info = get_account_info(c)
     conn.close()
 
     holdings = [build_holding(r) for r in rows]
@@ -389,7 +452,7 @@ def get_portfolio():
 
     # Cash is a first-class holding, so every allocation slice (cash included)
     # sums to 100% of securities + cash. Percentages are computed client-side.
-    cash_value = round(max(summary['total_cash'], 0), 2)
+    cash_value = round(max(summary['cash_balance'], 0), 2)
     if cash_value > 0:
         holdings.append(cash_holding(cash_value, account_id))
     holdings.sort(key=lambda h: h['market_value'], reverse=True)
@@ -398,13 +461,25 @@ def get_portfolio():
         'date': latest_date,
         'account_id': account_id,
         'accounts': account_ids,
+        'aliases': {aid: info.get(aid, {}).get('alias', '') for aid in account_ids},
         'holdings': holdings,
         'summary': {
             'total_value': round(securities_value, 2),
-            'net_liquidation': round(summary['total_nav'], 2),
-            'total_cash': round(summary['total_cash'], 2),
-            'total_day_pnl': round(summary['total_day_pnl'], 2),
+            'net_liquidation': summary['net_liquidation'],
+            'total_cash': summary['cash_balance'],
+            'total_day_pnl': summary['day_pnl'],
         },
+        # NAV decomposition straight from EquitySummaryInBase
+        'equity': {
+            'stock': summary['stock_value'],
+            'options': summary['options_value'],
+            'cash': summary['cash_balance'],
+            'dividend_accruals': summary['dividend_accruals'],
+            'interest_accruals': summary['interest_accruals'],
+            'total': summary['net_liquidation'],
+        },
+        # MTD/YTD income & costs straight from CashReport
+        'cash_report': cash_report,
         'asset_class_summary': group_summary(holdings, 'asset_class'),
         'ticker_summary': [
             {
