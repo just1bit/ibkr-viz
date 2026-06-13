@@ -3,13 +3,7 @@ import type { Account } from '../lib/types'
 import { api } from '../lib/api'
 import { useTheme } from '../hooks/useTheme'
 import { AccountSelect } from './AccountSelect'
-import {
-  EyeIcon,
-  EyeOffIcon,
-  MoonIcon,
-  RefreshIcon,
-  SunIcon,
-} from './icons'
+import { EyeIcon, EyeOffIcon, MoonIcon, RefreshIcon, SunIcon } from './icons'
 
 interface Props {
   accounts: Account[]
@@ -96,7 +90,7 @@ export function Header({
             <div className="hidden text-[11px] text-faint sm:block">
               {mode === 'live' ? 'Live · IBKR' : 'Demo data'}
               {lastRefresh && lastRefresh !== 'Never' && (
-                <span className="tnum"> · {lastRefresh}</span>
+                <span className="tabular-nums"> · {lastRefresh}</span>
               )}
             </div>
           </div>
@@ -116,18 +110,13 @@ export function Header({
             title="Refresh data"
             className="flex h-9 items-center gap-1.5 rounded-[10px] border border-border bg-surface px-3 text-[13px] font-medium text-text transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <RefreshIcon
-              className={`h-4 w-4 ${busy ? 'animate-spin-slow' : ''}`}
-            />
-            <span className="hidden sm:inline tnum">
+            <RefreshIcon className={`h-4 w-4 ${busy ? 'animate-spin-slow' : ''}`} />
+            <span className="hidden sm:inline tabular-nums">
               {cooldown > 0 ? cooldownLabel : 'Refresh'}
             </span>
           </button>
 
-          <IconButton
-            onClick={onToggleHidden}
-            title={hidden ? 'Show amounts' : 'Hide amounts'}
-          >
+          <IconButton onClick={onToggleHidden} title={hidden ? 'Show amounts' : 'Hide amounts'}>
             {hidden ? <EyeOffIcon /> : <EyeIcon />}
           </IconButton>
 

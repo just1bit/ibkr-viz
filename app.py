@@ -75,6 +75,56 @@ def init_db():
     storage.init_db(conn)
     conn.close()
 
+def _migrate_to_current_state():
+    """One-shot migration: populate current_state from the latest nav_history
+    rows, then drop the old nav_history and cash_report tables.
+
+    Safe to call repeatedly — does nothing if current_state already has data
+    or if the old tables don't exist."""
+    conn = get_db()
+    c = conn.cursor()
+
+    # Already migrated?
+    c.execute('SELECT COUNT(*) AS cnt FROM current_state')
+    if c.fetchone()['cnt'] > 0:
+        conn.close()
+        return
+
+    # Check if old tables exist
+    try:
+        c.execute('SELECT COUNT(*) AS cnt FROM nav_history')
+    except Exception:
+        conn.close()
+        return  # Old tables already gone or never existed
+
+    # Migrate latest per-account nav_history → current_state
+    try:
+        c.execute('''
+            INSERT INTO current_state
+                (account_id, net_liquidation, cash_balance, stock_value,
+                 options_value, dividend_accruals, interest_accruals, day_pnl)
+            SELECT n.account_id, n.net_liquidation, n.cash_balance,
+                   n.stock_value, n.options_value, n.dividend_accruals,
+                   n.interest_accruals, n.day_pnl
+            FROM nav_history n
+            WHERE n.date = (SELECT MAX(date) FROM nav_history
+                            WHERE account_id = n.account_id)
+        ''')
+    except Exception:
+        conn.rollback()
+        conn.close()
+        return  # Column mismatch or other schema issue — skip
+
+    # Drop old tables
+    try:
+        c.execute('DROP TABLE IF EXISTS nav_history')
+        c.execute('DROP TABLE IF EXISTS cash_report')
+    except Exception:
+        pass
+
+    conn.commit()
+    conn.close()
+
 def ensure_data():
     """Seed mock data if DB is empty and mock_mode is on."""
     conn = get_db()
@@ -120,7 +170,7 @@ def _expected_report_date(now_mkt):
 def store_report(conn, data, report_date):
     """Insert one parsed Flex report into the database (no commit).
 
-    Writes nav_history (NAV components), daily_snapshot, cash_report rows
+    Writes current_state (NAV components, upserted), daily_snapshot rows
     keyed by the report date, and upserts the per-account profile into
     account_info. Also used by the standalone re-ingest path, so it must not
     depend on request context.
@@ -129,21 +179,22 @@ def store_report(conn, data, report_date):
     for acc in data['accounts']:
         aid = acc['account_id']
 
-        c.execute('''INSERT INTO nav_history
-            (date, account_id, net_liquidation, cash_balance, stock_value,
+        c.execute('''INSERT INTO current_state
+            (account_id, net_liquidation, cash_balance, stock_value,
              options_value, dividend_accruals, interest_accruals, day_pnl)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-            (report_date, aid, acc['net_liquidation'], acc['cash_balance'],
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_id) DO UPDATE SET
+             net_liquidation=excluded.net_liquidation,
+             cash_balance=excluded.cash_balance,
+             stock_value=excluded.stock_value,
+             options_value=excluded.options_value,
+             dividend_accruals=excluded.dividend_accruals,
+             interest_accruals=excluded.interest_accruals,
+             day_pnl=excluded.day_pnl''',
+            (aid, acc['net_liquidation'], acc['cash_balance'],
              acc['stock_value'], acc['options_value'],
              acc['dividend_accruals'], acc['interest_accruals'],
              acc['day_pnl']))
-
-        cr = acc['cash_report']
-        cols = list(cr.keys())
-        c.execute(f'''INSERT INTO cash_report
-            (date, account_id, {', '.join(cols)})
-            VALUES ({', '.join(['?'] * (len(cols) + 2))})''',
-            [report_date, aid] + [cr[k] for k in cols])
 
         c.execute('DELETE FROM account_info WHERE account_id = ?', (aid,))
         c.execute('''INSERT INTO account_info
@@ -211,7 +262,7 @@ def refresh_real_data():
 
     conn = get_db()
     c = conn.cursor()
-    c.execute('SELECT MAX(date) AS latest FROM nav_history')
+    c.execute('SELECT MAX(date) AS latest FROM daily_snapshot')
     row = c.fetchone()
     latest_stored = row['latest'] if row else None
     conn.close()
@@ -256,7 +307,7 @@ def refresh_real_data():
     try:
         conn = get_db()
         c = conn.cursor()
-        c.execute('SELECT COUNT(*) AS cnt FROM nav_history WHERE date = ?',
+        c.execute('SELECT COUNT(*) AS cnt FROM daily_snapshot WHERE date = ?',
                   (report_date,))
         already_stored = c.fetchone()['cnt'] > 0
 
@@ -278,31 +329,19 @@ def refresh_real_data():
 # ---------------------------------------------------------------------------
 # Portfolio builders (colors are assigned by the frontend, not here)
 # ---------------------------------------------------------------------------
-def account_summary(cursor, date, account_id):
+def account_summary(cursor, account_id):
     """NAV components / P&L totals for one account, or all accounts merged.
 
-    Always returns numeric values (missing rows default to 0)."""
+    Reads from the current_state table (one row per account, upserted on
+    each refresh). Always returns numeric values (missing rows default to 0)."""
     cols = ('net_liquidation', 'cash_balance', 'stock_value', 'options_value',
             'dividend_accruals', 'interest_accruals', 'day_pnl')
     select = ', '.join(f'SUM({c}) AS {c}' for c in cols)
     if account_id == 'ALL':
-        cursor.execute(f'SELECT {select} FROM nav_history WHERE date = ?', (date,))
+        cursor.execute(f'SELECT {select} FROM current_state')
     else:
-        cursor.execute(f'''SELECT {select} FROM nav_history
-                           WHERE date = ? AND account_id = ?''', (date, account_id))
-    row = cursor.fetchone()
-    return {c: round(row[c], 2) if row and row[c] is not None else 0 for c in cols}
-
-
-def cash_report_summary(cursor, date, account_id):
-    """MTD/YTD income & cost figures, merged across the selected scope."""
-    cols = list(flex_parser.CASH_REPORT_FIELDS.keys())
-    select = ', '.join(f'SUM({c}) AS {c}' for c in cols)
-    if account_id == 'ALL':
-        cursor.execute(f'SELECT {select} FROM cash_report WHERE date = ?', (date,))
-    else:
-        cursor.execute(f'''SELECT {select} FROM cash_report
-                           WHERE date = ? AND account_id = ?''', (date, account_id))
+        cursor.execute(f'''SELECT {select} FROM current_state
+                           WHERE account_id = ?''', (account_id,))
     row = cursor.fetchone()
     return {c: round(row[c], 2) if row and row[c] is not None else 0 for c in cols}
 
@@ -389,22 +428,22 @@ def get_accounts():
     conn = get_db()
     c = conn.cursor()
     c.execute('''
-        SELECT n.account_id, n.net_liquidation, n.date, n.day_pnl
-        FROM nav_history n
-        WHERE n.date = (SELECT MAX(date) FROM nav_history WHERE account_id = n.account_id)
-        ORDER BY n.account_id
+        SELECT account_id, net_liquidation, day_pnl
+        FROM current_state
+        ORDER BY account_id
     ''')
     rows = c.fetchall()
     info = get_account_info(c)
     conn.close()
 
+    refresh_date = get_config_val('last_refresh', '')
     accounts = []
     for r in rows:
         i = info.get(r['account_id'], {})
         accounts.append({
             'account_id': r['account_id'],
             'net_liquidation': r['net_liquidation'],
-            'date': r['date'],
+            'date': refresh_date,
             'day_pnl': r['day_pnl'],
             'alias': i.get('alias', ''),
             'account_type': i.get('account_type', 'MARGIN'),
@@ -439,8 +478,7 @@ def get_portfolio():
         conn.close()
         return jsonify({'error': 'No holdings found'}), 404
 
-    summary = account_summary(c, latest_date, account_id)
-    cash_report = cash_report_summary(c, latest_date, account_id)
+    summary = account_summary(c, account_id)
 
     c.execute('SELECT DISTINCT account_id FROM daily_snapshot WHERE date = ?', (latest_date,))
     account_ids = [r['account_id'] for r in c.fetchall()]
@@ -478,8 +516,6 @@ def get_portfolio():
             'interest_accruals': summary['interest_accruals'],
             'total': summary['net_liquidation'],
         },
-        # MTD/YTD income & costs straight from CashReport
-        'cash_report': cash_report,
         'asset_class_summary': group_summary(holdings, 'asset_class'),
         'ticker_summary': [
             {
@@ -625,6 +661,7 @@ def setup_scheduler():
         pass  # APScheduler optional
 
 init_db()
+_migrate_to_current_state()
 ensure_data()
 setup_scheduler()
 

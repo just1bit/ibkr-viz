@@ -14,8 +14,6 @@ attribute is a data problem in the Flex query, not something to paper over.
           ├── MTMPerformanceSummaryInBase
           │     └── MTMPerformanceSummaryUnderlying  → day P&L (account + per
           │                                            position), prev close
-          ├── CashReport
-          │     └── CashReportCurrency               → MTD/YTD income & costs
           └── OpenPositions
                 └── OpenPosition                     → holdings (incl. option
                                                        contract terms)
@@ -34,26 +32,6 @@ CATEGORY_MAP = {
     'FUT': 'FUTURE',
     'BOND': 'BOND',
     'CASH': 'CASH',
-}
-
-# DB column → XML attribute on the BASE_SUMMARY CashReportCurrency row.
-CASH_REPORT_FIELDS = {
-    'commissions_mtd': 'commissionsMTD',
-    'commissions_ytd': 'commissionsYTD',
-    'broker_interest_mtd': 'brokerInterestMTD',
-    'broker_interest_ytd': 'brokerInterestYTD',
-    'dividends_mtd': 'dividendsMTD',
-    'dividends_ytd': 'dividendsYTD',
-    'payment_in_lieu_mtd': 'paymentInLieuMTD',
-    'payment_in_lieu_ytd': 'paymentInLieuYTD',
-    'withholding_tax_mtd': 'withholdingTaxMTD',
-    'withholding_tax_ytd': 'withholdingTaxYTD',
-    'deposit_withdrawals_mtd': 'depositWithdrawalsMTD',
-    'deposit_withdrawals_ytd': 'depositWithdrawalsYTD',
-    'net_trades_sales_mtd': 'netTradesSalesMTD',
-    'net_trades_sales_ytd': 'netTradesSalesYTD',
-    'net_trades_purchases_mtd': 'netTradesPurchasesMTD',
-    'net_trades_purchases_ytd': 'netTradesPurchasesYTD',
 }
 
 
@@ -93,7 +71,6 @@ def parse_flex_xml(xml_text: str) -> Dict:
             'syep', 'drip', 'tax_lot_method', 'date_opened',
             'net_liquidation', 'cash_balance', 'stock_value', 'options_value',
             'dividend_accruals', 'interest_accruals', 'day_pnl',
-            'cash_report': {<CASH_REPORT_FIELDS keys>},
             'holdings': [{
                 'conid', 'ticker', 'full_name', 'asset_class', 'side',
                 'quantity', 'market_value', 'mark_price',
@@ -134,15 +111,6 @@ def parse_flex_xml(xml_text: str) -> Dict:
                 }
             else:
                 day_pnl = round(_num(row, 'total'), 2)
-
-        # --- MTD/YTD income & costs: the BASE_SUMMARY CashReport row ---
-        cash_report = {k: 0.0 for k in CASH_REPORT_FIELDS}
-        for row in stmt.find('CashReport'):
-            if row.get('levelOfDetail') == 'BaseCurrency':
-                cash_report = {
-                    col: round(_num(row, attr), 2)
-                    for col, attr in CASH_REPORT_FIELDS.items()
-                }
 
         holdings = []
         for pos in stmt.find('OpenPositions'):
@@ -188,7 +156,6 @@ def parse_flex_xml(xml_text: str) -> Dict:
             'dividend_accruals': round(_num(latest_es, 'dividendAccruals'), 2),
             'interest_accruals': round(_num(latest_es, 'interestAccruals'), 2),
             'day_pnl': day_pnl,
-            'cash_report': cash_report,
             'holdings': holdings,
         })
 

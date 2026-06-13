@@ -61,80 +61,25 @@ def _random_walk(n_days, start_val, annual_return, annual_vol):
     return values
 
 
-def generate_nav_history(days=400, start_nav=100000):
-    """Generate daily NAV / cash history for all accounts.
-
-    The product no longer charts returns over time, but a short history is
-    still needed so day P/L (vs. the previous day) has a baseline, and so
-    incremental refresh has a prior row.
-
-    Returns:
-        dates: list of date strings 'YYYY-MM-DD'
-        nav_data: {account_id: [(date, nav, cash, day_pnl), ...]}
-    """
-    end_date = datetime(2026, 5, 2)
-    dates = [(end_date - timedelta(days=i)) for i in range(days - 1, -1, -1)]
-    date_strs = [d.strftime('%Y-%m-%d') for d in dates]
-
-    nav_data = {}
-    for aid in ACCOUNT_IDS:
-        cash_ratio = ACCOUNT_CASH_RATIO[aid]
-        nav_series = _random_walk(days, start_nav, 0.10, 0.18)
-
-        rows = []
-        for i, (d, nav) in enumerate(zip(date_strs, nav_series)):
-            cash = max(1000, nav * cash_ratio * (0.8 + random.random() * 0.4))
-            day_pnl = nav - nav_series[i - 1] if i > 0 else 0
-
-            rows.append((d, nav, cash, day_pnl))
-        nav_data[aid] = rows
-
-    return date_strs, nav_data
-
-
-def _nav_components(aid, nav, cash, options_value):
-    """Split a NAV into the EquitySummary-style components we store."""
-    dividend_accruals = round(nav * 0.0004, 2)
-    interest_accruals = round(-nav * 0.0001, 2)
-    stock = round(nav - cash - options_value - dividend_accruals - interest_accruals, 2)
-    return stock, dividend_accruals, interest_accruals
-
-
-def _insert_nav_row(c, date_str, aid, nav, cash, day_pnl, options_value):
-    stock, div_acc, int_acc = _nav_components(aid, nav, cash, options_value)
-    c.execute('''INSERT INTO nav_history
-        (date, account_id, net_liquidation, cash_balance, stock_value,
+def _insert_current_state(c, aid, nav, cash, stock_value, options_value):
+    """Upsert one row into current_state (latest NAV snapshot per account)."""
+    div_acc = round(nav * 0.0004, 2)
+    int_acc = round(-nav * 0.0001, 2)
+    day_pnl = round(nav * random.gauss(0.0004, 0.008), 2)
+    c.execute('''INSERT INTO current_state
+        (account_id, net_liquidation, cash_balance, stock_value,
          options_value, dividend_accruals, interest_accruals, day_pnl)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-        (date_str, aid, nav, cash, stock, options_value,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(account_id) DO UPDATE SET
+         net_liquidation=excluded.net_liquidation,
+         cash_balance=excluded.cash_balance,
+         stock_value=excluded.stock_value,
+         options_value=excluded.options_value,
+         dividend_accruals=excluded.dividend_accruals,
+         interest_accruals=excluded.interest_accruals,
+         day_pnl=excluded.day_pnl''',
+        (aid, nav, cash, stock_value, options_value,
          div_acc, int_acc, day_pnl))
-
-
-def _insert_cash_report(c, date_str, aid, nav, day_index):
-    """Deterministic but plausible MTD/YTD cash-flow figures."""
-    mtd = (day_index % 21) + 1
-    ytd = (day_index % 252) + 1
-    scale = nav / 100000
-    c.execute('''INSERT INTO cash_report
-        (date, account_id,
-         commissions_mtd, commissions_ytd,
-         broker_interest_mtd, broker_interest_ytd,
-         dividends_mtd, dividends_ytd,
-         payment_in_lieu_mtd, payment_in_lieu_ytd,
-         withholding_tax_mtd, withholding_tax_ytd,
-         deposit_withdrawals_mtd, deposit_withdrawals_ytd,
-         net_trades_sales_mtd, net_trades_sales_ytd,
-         net_trades_purchases_mtd, net_trades_purchases_ytd)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-        (date_str, aid,
-         round(-1.2 * mtd * scale, 2), round(-1.2 * ytd * scale, 2),
-         round(-2.4 * mtd * scale, 2), round(-2.4 * ytd * scale, 2),
-         round(3.1 * mtd * scale, 2), round(3.1 * ytd * scale, 2),
-         round(0.4 * mtd * scale, 2), round(0.4 * ytd * scale, 2),
-         round(-0.9 * mtd * scale, 2), round(-0.9 * ytd * scale, 2),
-         round(500 * (mtd // 7) * scale, 2), round(500 * (ytd // 21) * scale, 2),
-         round(1800 * mtd * scale, 2), round(1800 * ytd * scale, 2),
-         round(-2100 * mtd * scale, 2), round(-2100 * ytd * scale, 2)))
 
 
 def _insert_snapshot_row(c, date_str, aid, h, idx, price, day_pnl):
@@ -169,37 +114,57 @@ def seed_database(conn) -> None:
         c.execute(f'DROP TABLE IF EXISTS {table}')
         c.execute(f'CREATE TABLE {table} {body}')
 
-    date_strs, nav_data = generate_nav_history(days=400, start_nav=100000)
+    # Generate consecutive business days of snapshot history.
+    # current_state only stores the latest snapshot.
+    end_date = datetime(2026, 5, 1)  # Friday
+    while end_date.weekday() >= 5:
+        end_date -= timedelta(days=1)
+    days = 5
+    date_strs = []
+    d = end_date
+    for _ in range(days):
+        date_strs.insert(0, d.strftime('%Y-%m-%d'))
+        d -= timedelta(days=1)
+        while d.weekday() >= 5:
+            d -= timedelta(days=1)
 
-    # Insert daily_snapshot rows
+    # Per-account NAV series
+    nav_series = {}
     for aid in ACCOUNT_IDS:
-        holdings = [h for h in MOCK_HOLDINGS if h[11] == aid]
+        cash_ratio = ACCOUNT_CASH_RATIO[aid]
+        start_nav = 120000 + hash(aid) % 80000
+        series = _random_walk(days, start_nav, 0.10, 0.18)
+        nav_series[aid] = series
 
-        for date_str in date_strs:
-            nav_row = next(r for r in nav_data[aid] if r[0] == date_str)
-            nav_val = nav_row[1]
-            scale = nav_val / 100000  # scale holdings proportionally with NAV
+    # Insert daily_snapshot rows for each day
+    for date_str in date_strs:
+        for aid in ACCOUNT_IDS:
+            holdings = [h for h in MOCK_HOLDINGS if h[11] == aid]
+            day_idx = date_strs.index(date_str)
+            nav = nav_series[aid][day_idx]
+            scale = nav / 100000
 
             for idx, h in enumerate(holdings):
                 qty, base_price, mult = h[3], h[4], h[5]
-                # Add noise to individual prices
                 price = round(base_price * scale * (0.95 + random.random() * 0.10), 2)
                 day_pnl = round(qty * price * mult * random.gauss(0, 0.01), 2)
                 _insert_snapshot_row(c, date_str, aid, h, idx, price, day_pnl)
 
-    # Insert nav_history + cash_report rows
+    # Insert current_state (latest day only)
+    latest = date_strs[-1]
     for aid in ACCOUNT_IDS:
-        option_mvs = {}
-        if any(h[2] == 'OPTION' for h in MOCK_HOLDINGS if h[11] == aid):
-            c.execute('''SELECT date, SUM(market_value) AS mv FROM daily_snapshot
-                         WHERE account_id = ? AND asset_class = 'OPTION'
-                         GROUP BY date''', (aid,))
-            option_mvs = {r['date']: r['mv'] for r in c.fetchall()}
-        for i, row in enumerate(nav_data[aid]):
-            date_str, nav, cash, day_pnl = row
-            _insert_nav_row(c, date_str, aid, nav, cash, day_pnl,
-                            round(option_mvs.get(date_str, 0), 2))
-            _insert_cash_report(c, date_str, aid, nav, i)
+        # Sum market values from latest day's snapshot
+        c.execute('''SELECT asset_class, SUM(market_value) AS mv
+                     FROM daily_snapshot
+                     WHERE date = ? AND account_id = ?
+                     GROUP BY asset_class''', (latest, aid))
+        class_mv = {r['asset_class']: r['mv'] for r in c.fetchall()}
+        stock_value = round(class_mv.get('STOCK', 0) + class_mv.get('ETF', 0) + class_mv.get('BOND', 0), 2)
+        options_value = round(class_mv.get('OPTION', 0), 2)
+
+        nav = nav_series[aid][-1]
+        cash = round(max(1000, nav * ACCOUNT_CASH_RATIO[aid]), 2)
+        _insert_current_state(c, aid, nav, cash, stock_value, options_value)
 
     # Insert account_info rows
     for aid, (alias, atype, syep, drip, lot, opened) in ACCOUNT_PROFILES.items():
@@ -209,9 +174,9 @@ def seed_database(conn) -> None:
             VALUES (?, ?, ?, ?, ?, ?, ?)''',
             (aid, alias, atype, syep, drip, lot, opened))
 
-    # Insert config (table freshly created, plain INSERT is safe)
+    # Insert config
     c.execute('INSERT INTO config (key, value) VALUES (?, ?)',
-              ('last_refresh', date_strs[-1]))
+              ('last_refresh', latest))
     c.execute('INSERT INTO config (key, value) VALUES (?, ?)',
               ('last_manual_refresh', '0'))
 
@@ -222,24 +187,20 @@ def incremental_update(conn) -> str:
     """Add one new day of mock data. Returns the new date string."""
     c = conn.cursor()
 
-    # Find the latest date
-    c.execute('SELECT MAX(date) FROM nav_history')
+    c.execute('SELECT MAX(date) FROM daily_snapshot')
     row = c.fetchone()
     if not row or not row[0]:
         seed_database(conn)
-        c.execute('SELECT MAX(date) FROM nav_history')
+        c.execute('SELECT MAX(date) FROM daily_snapshot')
         last_date = c.fetchone()[0]
     else:
         last_date = row[0]
 
     next_date = (datetime.strptime(last_date, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
-    day_index = (datetime.strptime(next_date, '%Y-%m-%d') - datetime(2025, 1, 1)).days
 
     for aid in ACCOUNT_IDS:
-        # Get previous NAV
         c.execute('''SELECT net_liquidation, cash_balance
-                     FROM nav_history WHERE date = ? AND account_id = ?''',
-                  (last_date, aid))
+                     FROM current_state WHERE account_id = ?''', (aid,))
         prev = c.fetchone()
         if not prev:
             continue
@@ -247,12 +208,11 @@ def incremental_update(conn) -> str:
         prev_nav, prev_cash = prev['net_liquidation'], prev['cash_balance']
 
         # Small random change
-        daily_ret = random.gauss(0.0004, 0.012)  # ~ daily return + noise
+        daily_ret = random.gauss(0.0004, 0.012)
         new_nav = round(prev_nav * (1 + daily_ret), 2)
         new_cash = round(prev_cash * (1 + random.gauss(0.0, 0.005)), 2)
-        day_pnl = round(new_nav - prev_nav, 2)
 
-        # Insert daily_snapshot rows, tracking the new option value for nav
+        # Insert daily_snapshot rows using previous day's holdings as template
         c.execute('''SELECT * FROM daily_snapshot
                      WHERE date = ? AND account_id = ?''', (last_date, aid))
         holdings = c.fetchall()
@@ -284,9 +244,16 @@ def incremental_update(conn) -> str:
                  r['strike'], r['expiry'], r['put_call'],
                  r['underlying_symbol'], r['listing_exchange'], r['currency']))
 
-        _insert_nav_row(c, next_date, aid, new_nav, new_cash, day_pnl,
-                        round(options_value, 2))
-        _insert_cash_report(c, next_date, aid, new_nav, day_index)
+        # Compute stock value from latest snapshot
+        c.execute('''SELECT asset_class, SUM(market_value) AS mv
+                     FROM daily_snapshot
+                     WHERE date = ? AND account_id = ?
+                     GROUP BY asset_class''', (next_date, aid))
+        class_mv = {r['asset_class']: r['mv'] for r in c.fetchall()}
+        stock_value = round(class_mv.get('STOCK', 0) + class_mv.get('ETF', 0) + class_mv.get('BOND', 0), 2)
+        options_value = round(class_mv.get('OPTION', 0), 2)
+
+        _insert_current_state(c, aid, new_nav, new_cash, stock_value, options_value)
 
     c.execute('DELETE FROM config WHERE key = ?', ('last_refresh',))
     c.execute('INSERT INTO config (key, value) VALUES (?, ?)',

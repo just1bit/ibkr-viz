@@ -58,7 +58,7 @@ export function DayPnlCard({ portfolio, hidden }: Props) {
           {fmtUSD(total, hidden)}
         </span>
       </div>
-      <div className="relative min-h-[300px] flex-1 p-2 sm:p-3">
+      <div className="relative min-h-[200px] flex-1 p-2 sm:p-3">
         <div ref={elRef} className="absolute inset-0" />
       </div>
     </div>

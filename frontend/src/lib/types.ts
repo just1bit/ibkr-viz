@@ -62,26 +62,6 @@ export interface EquityComponents {
   total: number
 }
 
-/** MTD/YTD income & costs straight from CashReport (BASE_SUMMARY). */
-export interface CashReport {
-  commissions_mtd: number
-  commissions_ytd: number
-  broker_interest_mtd: number
-  broker_interest_ytd: number
-  dividends_mtd: number
-  dividends_ytd: number
-  payment_in_lieu_mtd: number
-  payment_in_lieu_ytd: number
-  withholding_tax_mtd: number
-  withholding_tax_ytd: number
-  deposit_withdrawals_mtd: number
-  deposit_withdrawals_ytd: number
-  net_trades_sales_mtd: number
-  net_trades_sales_ytd: number
-  net_trades_purchases_mtd: number
-  net_trades_purchases_ytd: number
-}
-
 export interface Portfolio {
   date: string
   account_id: string
@@ -90,7 +70,6 @@ export interface Portfolio {
   holdings: Holding[]
   summary: PortfolioSummary
   equity: EquityComponents
-  cash_report: CashReport
   asset_class_summary: AllocationSlice[]
   ticker_summary: AllocationSlice[]
 }

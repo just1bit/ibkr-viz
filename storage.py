@@ -57,17 +57,15 @@ SCHEMA = {
         currency    TEXT DEFAULT 'USD',
         PRIMARY KEY (date, account_id, ticker)
     )''',
-    'nav_history': '''(
-        date            TEXT NOT NULL,
-        account_id      TEXT NOT NULL,
-        net_liquidation REAL,
-        cash_balance    REAL,
-        stock_value     REAL,
-        options_value   REAL,
+    'current_state': '''(
+        account_id        TEXT PRIMARY KEY,
+        net_liquidation   REAL,
+        cash_balance      REAL,
+        stock_value       REAL,
+        options_value     REAL,
         dividend_accruals REAL,
         interest_accruals REAL,
-        day_pnl         REAL,
-        PRIMARY KEY (date, account_id)
+        day_pnl           REAL
     )''',
     'account_info': '''(
         account_id     TEXT PRIMARY KEY,
@@ -77,19 +75,6 @@ SCHEMA = {
         drip           TEXT,
         tax_lot_method TEXT,
         date_opened    TEXT
-    )''',
-    'cash_report': '''(
-        date       TEXT NOT NULL,
-        account_id TEXT NOT NULL,
-        commissions_mtd REAL, commissions_ytd REAL,
-        broker_interest_mtd REAL, broker_interest_ytd REAL,
-        dividends_mtd REAL, dividends_ytd REAL,
-        payment_in_lieu_mtd REAL, payment_in_lieu_ytd REAL,
-        withholding_tax_mtd REAL, withholding_tax_ytd REAL,
-        deposit_withdrawals_mtd REAL, deposit_withdrawals_ytd REAL,
-        net_trades_sales_mtd REAL, net_trades_sales_ytd REAL,
-        net_trades_purchases_mtd REAL, net_trades_purchases_ytd REAL,
-        PRIMARY KEY (date, account_id)
     )''',
     'config': '''(
         key   TEXT PRIMARY KEY,
