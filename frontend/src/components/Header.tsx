@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Account } from '../lib/types'
+import type { Account, UserProfile } from '../lib/types'
 import { api } from '../lib/api'
 import { useTheme } from '../hooks/useTheme'
 import { AccountSelect } from './AccountSelect'
+import { UserMenu } from './UserMenu'
 import { EyeIcon, EyeOffIcon, MoonIcon, RefreshIcon, SunIcon } from './icons'
 
 interface Props {
@@ -12,9 +13,10 @@ interface Props {
   hidden: boolean
   onToggleHidden: () => void
   lastRefresh: string
-  mode: string
   initialCooldown: number
   onRefreshed: () => void
+  user: UserProfile
+  onLogout: () => void
 }
 
 export function Header({
@@ -24,9 +26,10 @@ export function Header({
   hidden,
   onToggleHidden,
   lastRefresh,
-  mode,
   initialCooldown,
   onRefreshed,
+  user,
+  onLogout,
 }: Props) {
   const { isDark, toggle } = useTheme()
   const [cooldown, setCooldown] = useState(0)
@@ -88,7 +91,7 @@ export function Header({
               Portfolio
             </div>
             <div className="hidden text-[11px] text-faint sm:block">
-              {mode === 'live' ? 'Live · IBKR' : 'Demo data'}
+              IBKR Flex
               {lastRefresh && lastRefresh !== 'Never' && (
                 <span className="tabular-nums"> · {lastRefresh}</span>
               )}
@@ -123,6 +126,8 @@ export function Header({
           <IconButton onClick={toggle} title="Toggle theme">
             {isDark ? <SunIcon /> : <MoonIcon />}
           </IconButton>
+
+          <UserMenu user={user} onLogout={onLogout} />
         </div>
       </div>
     </header>

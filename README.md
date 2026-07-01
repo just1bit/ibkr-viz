@@ -1,8 +1,8 @@
 # IBKR Portfolio Viz
 
-轻量级投资组合可视化工具，通过 IBKR Flex Web Service 拉取真实持仓，**围绕「每个持仓的占比」展开**：环形图展示权重分布、再平衡表计算买卖建议。现金作为一种持仓纳入统计，所有扇区之和恒为 100%。
+轻量级多用户投资组合可视化工具，通过 IBKR Flex Web Service 拉取真实持仓，**围绕「每个持仓的占比」展开**：环形图展示权重分布、再平衡表计算买卖建议。现金作为一种持仓纳入统计，所有扇区之和恒为 100%。支持 Google OAuth 登录，每个用户绑定自己的 IBKR Flex 凭证，数据严格隔离。
 
-> A lightweight portfolio allocation & rebalancing tool for Interactive Brokers accounts. Visualizes position weights, tracks drift from target allocations, and suggests buy/sell amounts to rebalance.
+> A lightweight multi-tenant portfolio allocation & rebalancing tool for Interactive Brokers accounts. Google OAuth login, per-user IBKR Flex credentials, strict data isolation.
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)
 ![Flask](https://img.shields.io/badge/Flask-3.0-black?logo=flask)
@@ -14,6 +14,8 @@
 
 ## 功能 Features
 
+- **Google OAuth 登录** — 每个用户独立账号，数据严格隔离
+- **IBKR 凭证绑定** — 登录后在 UI 中输入 Flex Token 和 Query ID，加密存储
 - **持仓占比环形图** — Holdings / Asset class 双视图，图例与扇区双向高亮联动，Holdings 视图悬浮显示单持仓当日盈亏
 - **当日盈亏归因图** — 每持仓一根分叉横条（MTM 直取），悬浮显示前收→收盘价与涨跌%
 - **持仓明细表** — 数量、市价、当日涨跌%、当日盈亏、市值、权重条；期权显示行权价/到期/剩余天数；当日有交易自动标记；可排序
@@ -24,7 +26,6 @@
 - **KPI 概览** — 净值、当日盈亏、市值（附股票/期权拆分）、现金余额（附应计小计）
 - **多子账户** — 自动识别并显示账户别名，支持单账户或合并查看
 - **深浅双主题** + **响应式布局** + **一键隐藏金额**
-- **Mock 模式** — 无需 IBKR 凭证即可运行，内置模拟数据
 
 ---
 
@@ -35,62 +36,94 @@
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
-# 2. 构建前端（产物由 Flask 托管）
+# 2. 创建配置文件
+cp config.example.yaml config.local.yaml
+# 编辑 config.local.yaml，填入 Google OAuth 凭证等（见下方配置说明）
+
+# 3. 构建前端（产物由 Flask 托管）
 cd frontend && npm install && npm run build && cd ..
 
-# 3. 启动（默认端口 5123）
+# 4. 启动（默认端口 5123）
 python app.py
 # 访问 http://localhost:5123
 ```
 
-无配置文件时自动以 **mock 模式**运行，全部功能开箱即用。
+启动后，用户需通过 Google 登录，然后在 Setup 页面输入自己的 IBKR Flex Token 和 Query ID。数据按用户隔离存储。
 
 ---
 
 ## 配置 Configuration
 
-所有可配置项集中在一个文件，复制模板并按需修改（每个键的含义与取值见模板内注释）：
+所有可配置项集中在 `config.local.yaml`（从 `config.example.yaml` 复制）。该文件已被 `.gitignore` 忽略，**请勿提交真实密钥**。
 
-```bash
-cp config.example.yaml config.local.yaml
-```
-
-`config.local.yaml` 已被 `.gitignore` 忽略，**请勿提交真实密钥**。省略的键按默认值运行。要点：
+### 必需的部署配置
 
 | 配置组 | 键 | 说明 |
 |--------|----|------|
-| 模式 | `mock_mode` | true 用内置模拟数据，false 拉取真实 IBKR 数据 |
-| IBKR | `flex_token` / `flex_query_id` / `flex_max_wait` | Flex Web Service 凭证与轮询超时 |
-| 数据库 | `db_type` / `db_path` / `postgres_url` | sqlite（本地）或 postgres（生产） |
-| 对象存储 | `s3_*` | 原始 XML 按报表日存档，兼容 S3/R2/MinIO，可选 |
-| 刷新节流 | `market_timezone` / `report_ready_hour` / `fetch_retry_backoff` / `refresh_cooldown` | 报告周期判断全部以**市场时区**（默认美东）为基准，与部署地无关；后台每小时自检，已是最新则零请求 |
-| 服务 | `port` / `debug` | 监听端口（环境变量 `PORT` 优先）与 Flask debug |
+| Google OAuth | `google_client_id` / `google_client_secret` | Google Cloud Console → OAuth 2.0 客户端 ID |
+| Google OAuth | `base_url` | 应用公网 URL，用于构建 OAuth 回调地址 |
+| 安全 | `secret_key` | Flask 会话签名密钥（`secrets.token_hex(32)` 生成）|
+| 安全 | `flex_encryption_key` | IBKR Flex Token 加密密钥（`Fernet.generate_key()` 生成）|
+
+### 数据库、存储、调度
+
+| 配置组 | 键 | 说明 |
+|--------|----|------|
+| 数据库 | `db_type` / `db_path` / `postgres_url` | sqlite（单用户开发）或 postgres（多用户生产）|
+| 对象存储 | `s3_*` | 原始 XML 按报表日存档到 S3/R2/MinIO（可选）|
+| 调度 | `market_timezone` / `report_ready_hour` | 报告周期判断以市场时区为基准 |
+| 调度 | `fetch_retry_backoff` / `refresh_cooldown` / `scheduler_max_workers` | 节流与并发控制 |
+| 管理 | `admin_emails` | 拥有管理员权限的 Google 账号邮箱列表 |
+
+### 用户级配置
+
+以下配置不再出现在 YAML 中，改为用户登录后在 UI 中输入：
+- **Flex Web Service Token** — 每个用户在 IBKR Client Portal 生成的个人 Token
+- **Flex Query ID** — 每个用户的 IBKR Flex Query ID
+
+Token 使用 Fernet 加密后存储在数据库中，仅在刷新数据时解密到内存使用。
+
+### Google OAuth 设置
+
+1. 前往 [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials
+2. 创建 OAuth 2.0 Client ID，应用类型选择 **Web application**
+3. 在 Authorized redirect URIs 中添加：`{base_url}/auth/callback`
+   - 本地开发：`http://localhost:5123/auth/callback`
+   - 生产环境：`https://your-domain.com/auth/callback`
+4. 将生成的 Client ID 和 Client Secret 填入 `config.local.yaml`
 
 ### IBKR Flex Query 设置
 
-在 IBKR Client Portal → Reports → Flex Queries 中创建 Query，需包含以下 Sections：
+用户在登录后的 Setup 页面中输入凭证。需确保 Flex Query 包含以下 Sections：
 
 | Section | 级别 | 说明 |
 |---------|------|------|
 | AccountInformation | — | 账户类型（Margin / Cash） |
 | EquitySummaryInBase | — | 净值、现金、持仓价值（NAV 数据来源） |
-| CashReport | — | 现金余额 |
-| OpenPositions | **Detailed** | 持仓明细 + 成本基础（必须选 Detailed，Summary 级别无 cost basis）|
+| MTMPerformanceSummaryInBase | — | 当日盈亏与前收盘价 |
+| OpenPositions | **Detailed** | 持仓明细 + 成本基础（必须选 Detailed） |
 
 ---
 
 ## API 端点
 
-所有 GET 端点接受 `?account_id=<id>` 参数；`ALL` 表示合并所有子账户。
+所有 `/api/*` 端点需要登录（Cookie 会话）。
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/portfolio` | GET | 最新持仓与分类汇总（含 `summary.allocation_total` = 证券市值 + 现金）|
-| `/api/targets` | GET | 读取该账户的目标占比 `{ticker: pct}` |
-| `/api/targets` | POST | 保存目标占比，body：`{account_id, targets}` |
-| `/api/accounts` | GET | 子账户列表 |
-| `/api/status` | GET | 上次刷新时间、模式、冷却剩余 |
-| `/api/trigger-refresh` | GET | 手动触发刷新（带冷却限制）|
+| 端点 | 方法 | Auth | 说明 |
+|------|------|------|------|
+| `/auth/login` | GET | — | 重定向到 Google OAuth |
+| `/auth/callback` | GET | — | OAuth 回调，建立会话 |
+| `/auth/me` | GET | Session | 当前用户信息 |
+| `/auth/logout` | POST | Session | 登出，清除会话 |
+| `/api/setup/test-flex` | POST | Required | 测试 Flex 凭证（不保存）|
+| `/api/setup/configure` | POST | Required | 保存 Flex 凭证并触发首次拉取 |
+| `/api/setup/status` | GET | Required | Flex 配置状态 |
+| `/api/portfolio` | GET | Required | 最新持仓与分类汇总 |
+| `/api/targets` | GET/POST | Required | 读取/保存目标占比 |
+| `/api/accounts` | GET | Required | 子账户列表 |
+| `/api/status` | GET | Required | 上次刷新时间、冷却剩余、连接状态 |
+| `/api/trigger-refresh` | GET | Required | 手动触发刷新（带冷却限制）|
+| `/api/admin/users` | GET | Admin | 列出所有用户及其状态 |
 
 ---
 
@@ -104,24 +137,28 @@ IBKR Flex Web Service
         │  flex_parser.py
         ▼
    结构化数据 ──→ storage.py ──→ SQLite / PostgreSQL
-        │
+        │  (所有数据表以 user_id 分区)
         ▼
    Flask API ──→ React SPA（ECharts 渲染）
+        │  (需 Google OAuth 登录)
 ```
 
-**五张表：**
+**数据表（全部按 `user_id` 隔离）：**
 
 | 表 | 用途 |
 |----|------|
-| `daily_snapshot` | 每日持仓快照：数量、市值、市价、成本、未实现盈亏、当日盈亏、前收价/前收数量、期权条款、交易所（全部直取 XML）|
-| `nav_history` | 每日净值构成：净值 / 现金 / 股票 / 期权 / 应计 / 当日盈亏（直取 EquitySummary 与 MTM 汇总）|
-| `cash_report` | MTD/YTD 收支：佣金、融资利息、股息、代付股息、预扣税、出入金、买卖额（直取 CashReport）|
-| `account_info` | 账户档案：别名、类型、SYEP/DRIP、税批方法、开户日（直取 AccountInformation）|
-| `config` | 键值配置，含按账户保存的目标占比 `targets_<account_id>` |
+| `users` | 用户身份：Google 信息、加密的 Flex Token、Flex Query ID、连接状态 |
+| `sessions` | 服务端会话记录（支持强制登出） |
+| `user_fetch_log` | 每次数据拉取的审计日志 |
+| `daily_snapshot` | 每日持仓快照（PK: user_id + date + account_id + ticker）|
+| `current_state` | 最新净值组成（PK: user_id + account_id）|
+| `account_info` | 账户档案（PK: user_id + account_id）|
+| `config` | 用户级键值配置（PK: user_id + key）|
+| `schema_migrations` | 数据库迁移版本记录 |
 
-- **按报表周期拉取**：所有数据按报表日（XML `toDate`）入库与命名；后台每小时自检，仅当「应已发布的最新报表」（以市场时区美东 01:00 后为界，跳过周末）尚未入库时才请求 IBKR，报表缺失（节假日/生成延迟）时按 `fetch_retry_backoff` 退避重试；判断状态存于数据库，多实例共享同库时自动全局去重
-- **S3 冗余**：原始 XML 上传 S3 并验证后再写 DB，本地文件成功后清理
-- **双数据库**：`storage.py` 自动处理 SQLite `?` 与 PostgreSQL `%s` 占位符差异
+- **按报表周期拉取**：后台每小时自检所有配置了 Flex 凭证的用户，使用 `ThreadPoolExecutor` 并行刷新
+- **S3 冗余**：原始 XML 上传 S3 并验证后再写 DB
+- **双数据库**：`storage.py` 自动处理 SQLite/PostgreSQL 差异与连接池
 
 ---
 
@@ -129,9 +166,11 @@ IBKR Flex Web Service
 
 | 层 | 方案 |
 |----|------|
-| 前端 | Vite + React 18 + TypeScript + Tailwind CSS v4，ECharts 5 按需引入 |
-| 后端 | Python Flask 3 + APScheduler（每小时自检，按市场时区判断是否拉取）|
-| 数据库 | SQLite（本地）/ PostgreSQL（生产）|
+| 认证 | Google OAuth 2.0 (auth code flow) + Flask signed cookies + 服务端会话表 |
+| 加密 | Fernet (cryptography) 对称加密用户 Flex Token |
+| 前端 | Vite + React 18 + TypeScript + Tailwind CSS v4，ECharts 5 |
+| 后端 | Python Flask 3 + APScheduler + ThreadPoolExecutor |
+| 数据库 | SQLite（单用户）/ PostgreSQL（多用户，含连接池）|
 | 原始存储 | S3 兼容（AWS S3 / Cloudflare R2 / MinIO），可选 |
 | 部署 | 前端构建产物由 Flask 托管，单进程启动 |
 
@@ -142,6 +181,8 @@ IBKR Flex Web Service
 - [ ] **T-01** 持仓占比日变动 — 图例/再平衡表中展示各持仓相较前一交易日的占比变化（±pp）
 - [ ] **T-02** 下单清单导出 — 把买卖金额换算成股数，便于直接下单
 - [ ] **T-03** 目标归一化 — 一键将目标按比例缩放到合计 100%
+- [ ] **T-04** 多币种现金明细（CashReport Currency 级 CNH/HKD 行）
+- [ ] **T-05** 股票借出视图（SYEP 借出量）
 
 ---
 

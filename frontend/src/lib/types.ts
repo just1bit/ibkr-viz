@@ -79,8 +79,45 @@ export type Targets = Record<string, number>
 
 export interface Status {
   last_refresh: string
-  mode: 'mock' | 'live'
+  /** flex_status from the API (replaces old 'mode' field) */
+  flex_status: 'not_configured' | 'healthy' | 'error' | 'needs_attention'
   refresh_cooldown_remaining: number
 }
 
 export type DonutView = 'ticker' | 'asset_class'
+
+/** Current authenticated user profile from GET /auth/me */
+export interface UserProfile {
+  user_id: string
+  email: string
+  name: string
+  flex_query_id: string
+  has_flex_query: boolean
+  flex_status: 'not_configured' | 'healthy' | 'error' | 'needs_attention'
+  is_admin: boolean
+  created_at: string
+  last_login: string
+}
+
+/** Result from POST /api/setup/test-flex */
+export interface FlexTestResult {
+  status: string
+  accounts: Array<{ account_id: string; alias: string; account_type: string }>
+  report_date: string
+}
+
+/** Result from POST /api/setup/configure */
+export interface ConfigureResult {
+  status: string
+  flex_status: string
+  has_flex_query: boolean
+  report_date?: string
+  fetch_error?: string
+}
+
+/** Result from GET /api/setup/status */
+export interface SetupStatus {
+  flex_status: string
+  flex_query_id: string
+  has_flex_query: boolean
+}

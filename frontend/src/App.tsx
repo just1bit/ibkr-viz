@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { AuthProvider, useAuth } from './hooks/useAuth'
 import { api } from './lib/api'
 import type { Status } from './lib/types'
 import { useDashboard } from './hooks/useDashboard'
@@ -7,8 +8,39 @@ import { WealthHero } from './components/WealthHero'
 import { DayPnlCard } from './components/DayPnlCard'
 import { HoldingsCard } from './components/HoldingsCard'
 import { Skeleton } from './components/Skeleton'
+import { LoginPage } from './components/LoginPage'
+import { SetupPage } from './components/SetupPage'
+import { ConnectionBanner } from './components/ConnectionBanner'
 
 export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  )
+}
+
+function AppContent() {
+  const { authState, user, logout } = useAuth()
+
+  if (authState.status === 'loading') {
+    return <FullPageSkeleton />
+  }
+
+  if (authState.status === 'unauthenticated') {
+    return <LoginPage />
+  }
+
+  // Authenticated but Flex not configured → setup flow
+  if (user && !user.has_flex_query) {
+    return <SetupPage />
+  }
+
+  // Authenticated + Flex configured → dashboard
+  return <Dashboard user={user!} onLogout={logout} />
+}
+
+function Dashboard({ user, onLogout }: { user: NonNullable<ReturnType<typeof useAuth>['user']>; onLogout: () => void }) {
   const { account, setAccount, portfolio, accounts, targets, loading, error, reload, saveTargets } = useDashboard()
   const [hidden, setHidden] = useState(false)
   const [status, setStatus] = useState<Status | null>(null)
@@ -30,10 +62,13 @@ export default function App() {
         hidden={hidden}
         onToggleHidden={() => setHidden((h) => !h)}
         lastRefresh={status?.last_refresh ?? ''}
-        mode={status?.mode ?? 'mock'}
         initialCooldown={status?.refresh_cooldown_remaining ?? 0}
         onRefreshed={onRefreshed}
+        user={user}
+        onLogout={onLogout}
       />
+
+      <ConnectionBanner user={user} />
 
       <main className="mx-auto max-w-7xl px-4 py-5 sm:px-6 sm:py-7">
         {error ? (
@@ -42,7 +77,6 @@ export default function App() {
           <Skeleton />
         ) : portfolio ? (
           <div className="space-y-4 sm:space-y-5">
-            {/* Summary + day P&L */}
             <div className="grid grid-cols-1 items-stretch gap-4 sm:gap-5 lg:grid-cols-12">
               <div className="lg:col-span-4">
                 <WealthHero portfolio={portfolio} hidden={hidden} />
@@ -52,7 +86,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Holdings: donut + table + rebalance */}
             <HoldingsCard
               portfolio={portfolio}
               savedTargets={targets}
@@ -64,6 +97,19 @@ export default function App() {
           <Skeleton />
         )}
       </main>
+    </div>
+  )
+}
+
+function FullPageSkeleton() {
+  return (
+    <div className="flex min-h-screen items-center justify-center">
+      <div className="flex flex-col items-center gap-4">
+        <div className="flex h-14 w-14 items-center justify-center rounded-[14px] bg-accent/12">
+          <span className="h-4 w-4 animate-pulse rounded-full bg-accent/60" />
+        </div>
+        <span className="text-[14px] text-muted">Loading...</span>
+      </div>
     </div>
   )
 }
