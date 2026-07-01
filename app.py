@@ -1,9 +1,6 @@
-"""IBKR Portfolio Viz — Flask backend (multi-tenant).
+"""IBKR Portfolio Viz — multi-tenant Flask backend.
 
-Google OAuth authentication, per-user IBKR Flex credentials (encrypted at
-rest), user-scoped data isolation, concurrent per-user scheduler.
-
-All /api/* routes require a valid session. The old mock_mode path is removed.
+Google OAuth, per-user encrypted IBKR Flex credentials, user-scoped data.
 """
 
 import os
@@ -43,8 +40,6 @@ def load_config():
         'secret_key': 'CHANGE_ME',
         'flex_encryption_key': 'CHANGE_ME',
 
-        # IBKR Flex (shared per deployment — only flex_token was here;
-        # now flex_token and flex_query_id are per-user in the DB)
         'flex_max_wait': 30,
 
         # Database
@@ -77,17 +72,6 @@ def load_config():
     if os.path.exists(cfg_path):
         with open(cfg_path) as f:
             user_cfg = yaml.safe_load(f) or {}
-        # Warn about removed keys
-        for removed in ('mock_mode', 'flex_token', 'flex_query_id'):
-            if removed in user_cfg:
-                import warnings
-                warnings.warn(
-                    f"config key '{removed}' is no longer used — "
-                    f"flex_token and flex_query_id are now per-user (set via the "
-                    f"Setup page after login). mock_mode has been removed — the "
-                    f"app requires Google OAuth.",
-                    DeprecationWarning,
-                )
         defaults.update(user_cfg)
     return defaults
 
@@ -304,17 +288,8 @@ def _cleanup_temp(path):
 
 
 def refresh_user_data(user_id):
-    """Fetch and store real IBKR Flex data for a single user.
-
-    Reads flex_token (decrypted) and flex_query_id from the users table.
-    Returns (report_date, is_new, error).
-
-    The function is split into three phases so the DB connection is never
-    held across the slow IBKR network call:
-      1. DB read:  check credentials, backoff, expected date
-      2. Network:   fetch XML, parse, upload to S3 (no DB held)
-      3. DB write:  store report, update status
-    """
+    """Fetch IBKR Flex data for one user. Returns (report_date, is_new, error).
+    DB connection is released before the network call and re-acquired after."""
     # ---- Phase 1: DB read --------------------------------------------------
     conn = get_db()
     try:
@@ -453,10 +428,7 @@ def scheduled_refresh():
             try:
                 future.result()
             except Exception:
-                # Individual refresh failures are already logged inside
-                # refresh_user_data; we catch here so one user's crash
-                # doesn't kill the whole scheduler tick.
-                pass
+                pass  # per-user errors already logged in refresh_user_data
 
 
 def setup_scheduler():
@@ -732,7 +704,6 @@ def setup_configure():
 
     conn = get_db_g()
     storage.set_user_flex_credentials(conn, config, g.user_id, flex_token, flex_query_id)
-    # Don't close — we reuse the request-scoped connection
 
     # Trigger initial data fetch
     report_date, is_new, error = refresh_user_data(g.user_id)
@@ -771,7 +742,7 @@ def setup_status():
 # ---------------------------------------------------------------------------
 @app.route('/')
 def serve_index():
-    # No login check here — the React SPA handles auth state client-side
+    # SPA handles auth client-side
     if not os.path.exists(os.path.join(DIST_DIR, 'index.html')):
         return (
             'Frontend not built. Run: cd frontend && npm install && npm run build',

@@ -17,12 +17,7 @@ _pg_pool = None  # psycopg2 ThreadedConnectionPool, initialised lazily
 
 
 def connect(config):
-    """Return a DB-API 2.0 connection (SQLite or PostgreSQL).
-
-    Both backends return dict-like rows accessible by column name or index.
-    The PG connection auto-converts ? placeholders to %s so existing SQL works.
-    PostgreSQL uses a thread-safe connection pool.
-    """
+    """Return a dict-like DB-API connection (SQLite or PostgreSQL with pool)."""
     db_type = config.get('db_type', 'sqlite')
     if db_type == 'postgres':
         import psycopg2
@@ -245,7 +240,6 @@ def get_user_by_id(conn, user_id: str):
 
 
 def create_user(conn, user_id: str, email: str, name: str, google_sub: str):
-    """Insert a new user row. Returns the created row."""
     now = _utc_now()
     c = conn.cursor()
     c.execute('''INSERT INTO users
