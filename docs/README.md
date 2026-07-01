@@ -34,7 +34,7 @@
 ```bash
 # 1. 安装 Python 依赖
 python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+pip install -r backend/requirements.txt
 
 # 2. 创建配置文件
 cp config.example.yaml config.local.yaml
@@ -44,7 +44,7 @@ cp config.example.yaml config.local.yaml
 cd frontend && npm install && npm run build && cd ..
 
 # 4. 启动（默认端口 5123）
-python app.py
+python backend/app.py
 # 访问 http://localhost:5123
 ```
 
