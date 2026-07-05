@@ -5,7 +5,6 @@ Google OAuth, per-user encrypted IBKR Flex credentials, user-scoped data.
 
 import os
 import time
-import json
 import uuid
 import secrets
 from collections import defaultdict
@@ -42,9 +41,7 @@ def load_config():
 
         'flex_max_wait': 30,
 
-        # Database
-        'db_type': 'sqlite',
-        'db_path': os.path.join(BASE_DIR, 'ibkr_portfolio.db'),
+        # Database (PostgreSQL)
         'postgres_url': '',
 
         # S3
@@ -195,19 +192,16 @@ def _expected_report_date(now_mkt):
 # Data storage
 # ---------------------------------------------------------------------------
 def store_report(conn, user_id, data, report_date):
-    """Insert one parsed Flex report into the database (no commit).
-
-    All rows are scoped to user_id. Writes current_state (upsert),
-    daily_snapshot rows, and account_info (upsert).
-    """
+    """Insert one parsed Flex report into the database (no commit)."""
     c = conn.cursor()
     for acc in data['accounts']:
         aid = acc['account_id']
 
-        c.execute('''INSERT INTO current_state
+        c.execute('''INSERT INTO accounts
             (user_id, account_id, net_liquidation, cash_balance, stock_value,
-             options_value, dividend_accruals, interest_accruals, day_pnl)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             options_value, dividend_accruals, interest_accruals, day_pnl,
+             alias, account_type, syep, drip, tax_lot_method, date_opened)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, account_id) DO UPDATE SET
              net_liquidation=excluded.net_liquidation,
              cash_balance=excluded.cash_balance,
@@ -215,23 +209,22 @@ def store_report(conn, user_id, data, report_date):
              options_value=excluded.options_value,
              dividend_accruals=excluded.dividend_accruals,
              interest_accruals=excluded.interest_accruals,
-             day_pnl=excluded.day_pnl''',
+             day_pnl=excluded.day_pnl,
+             alias=excluded.alias,
+             account_type=excluded.account_type,
+             syep=excluded.syep,
+             drip=excluded.drip,
+             tax_lot_method=excluded.tax_lot_method,
+             date_opened=excluded.date_opened''',
             (user_id, aid, acc['net_liquidation'], acc['cash_balance'],
              acc['stock_value'], acc['options_value'],
              acc['dividend_accruals'], acc['interest_accruals'],
-             acc['day_pnl']))
-
-        c.execute('DELETE FROM account_info WHERE user_id = ? AND account_id = ?',
-                  (user_id, aid))
-        c.execute('''INSERT INTO account_info
-            (user_id, account_id, alias, account_type, syep, drip,
-             tax_lot_method, date_opened)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-            (user_id, aid, acc['alias'], acc['account_type'], acc['syep'],
-             acc['drip'], acc['tax_lot_method'], acc['date_opened']))
+             acc['day_pnl'], acc['alias'], acc['account_type'],
+             acc['syep'], acc['drip'], acc['tax_lot_method'],
+             acc['date_opened']))
 
         for h in acc['holdings']:
-            c.execute('''INSERT INTO daily_snapshot
+            c.execute('''INSERT INTO positions
                 (user_id, date, account_id, conid, ticker, full_name,
                  asset_class, side, quantity, market_value, mark_price,
                  cost_price, cost_basis, unrealized_pnl, day_pnl,
@@ -310,7 +303,7 @@ def refresh_user_data(user_id):
         expected = _expected_report_date(now_mkt)
 
         c = conn.cursor()
-        c.execute('SELECT MAX(date) AS latest FROM daily_snapshot WHERE user_id = ?',
+        c.execute('SELECT MAX(date) AS latest FROM positions WHERE user_id = ?',
                   (user_id,))
         row = c.fetchone()
         latest_stored = row['latest'] if row else None
@@ -318,16 +311,12 @@ def refresh_user_data(user_id):
         if latest_stored and latest_stored >= expected:
             return latest_stored, False, None
 
-        try:
-            last_attempt = float(
-                storage.get_config_val(conn, user_id, 'last_fetch_attempt', '0') or '0')
-        except (TypeError, ValueError):
-            last_attempt = 0
+        last_attempt = user['last_fetch_at'] or 0
 
         if time.time() - last_attempt < config['fetch_retry_backoff']:
             return latest_stored, False, None
 
-        storage.set_config_val(conn, user_id, 'last_fetch_attempt', str(time.time()))
+        storage.set_user_fetch_at(conn, user_id, time.time())
     finally:
         return_db(conn)
 
@@ -377,15 +366,15 @@ def refresh_user_data(user_id):
     conn = get_db()
     try:
         c = conn.cursor()
-        c.execute('''SELECT COUNT(*) AS cnt FROM daily_snapshot
+        c.execute('''SELECT COUNT(*) AS cnt FROM positions
                      WHERE user_id = ? AND date = ?''', (user_id, report_date))
         already_stored = c.fetchone()['cnt'] > 0
 
         if not already_stored:
             store_report(conn, user_id, data, report_date)
 
-        storage.set_config_val(conn, user_id, 'last_refresh', report_date)
-        storage.set_config_val(conn, user_id, 'last_fetch_attempt', str(time.time()))
+        storage.set_user_last_refresh(conn, user_id, report_date)
+        storage.set_user_fetch_at(conn, user_id, time.time())
         storage.set_user_flex_status(conn, user_id, 'healthy')
 
         elapsed_ms = int((time.time() - t0) * 1000)
@@ -455,10 +444,10 @@ def account_summary(cursor, user_id, account_id):
             'dividend_accruals', 'interest_accruals', 'day_pnl')
     select = ', '.join(f'SUM({c}) AS {c}' for c in cols)
     if account_id == 'ALL':
-        cursor.execute(f'SELECT {select} FROM current_state WHERE user_id = ?',
+        cursor.execute(f'SELECT {select} FROM accounts WHERE user_id = ?',
                        (user_id,))
     else:
-        cursor.execute(f'''SELECT {select} FROM current_state
+        cursor.execute(f'''SELECT {select} FROM accounts
                            WHERE user_id = ? AND account_id = ?''',
                        (user_id, account_id))
     row = cursor.fetchone()
@@ -467,12 +456,12 @@ def account_summary(cursor, user_id, account_id):
 
 def get_account_info(cursor, user_id):
     """user_id → {account_id: profile row}"""
-    cursor.execute('SELECT * FROM account_info WHERE user_id = ?', (user_id,))
+    cursor.execute('SELECT * FROM accounts WHERE user_id = ?', (user_id,))
     return {r['account_id']: dict(r) for r in cursor.fetchall()}
 
 
 def build_holding(row):
-    """Map a daily_snapshot row to the API holding dict."""
+    """Map a positions row to the API holding dict."""
     return {
         'conid': row['conid'],
         'ticker': row['ticker'],
@@ -763,12 +752,12 @@ def get_accounts():
     conn = get_db_g()
     c = conn.cursor()
     c.execute('''SELECT account_id, net_liquidation, day_pnl
-                 FROM current_state WHERE user_id = ?
+                 FROM accounts WHERE user_id = ?
                  ORDER BY account_id''', (user_id,))
     rows = c.fetchall()
     info = get_account_info(c, user_id)
-
-    refresh_date = storage.get_config_val(conn, user_id, 'last_refresh', '')
+    user = storage.get_user_by_id(conn, user_id)
+    refresh_date = user['last_refresh'] if user else ''
 
     accounts = []
     for r in rows:
@@ -796,17 +785,17 @@ def get_portfolio():
     conn = get_db_g()
     c = conn.cursor()
 
-    c.execute('SELECT MAX(date) AS max_date FROM daily_snapshot WHERE user_id = ?',
+    c.execute('SELECT MAX(date) AS max_date FROM positions WHERE user_id = ?',
               (user_id,))
     latest_date = c.fetchone()['max_date']
     if not latest_date:
         return jsonify({'error': 'No data'}), 404
 
     if account_id == 'ALL':
-        c.execute('''SELECT * FROM daily_snapshot
+        c.execute('''SELECT * FROM positions
                      WHERE user_id = ? AND date = ?''', (user_id, latest_date))
     else:
-        c.execute('''SELECT * FROM daily_snapshot
+        c.execute('''SELECT * FROM positions
                      WHERE user_id = ? AND date = ? AND account_id = ?''',
                   (user_id, latest_date, account_id))
 
@@ -816,7 +805,7 @@ def get_portfolio():
 
     summary = account_summary(c, user_id, account_id)
 
-    c.execute('''SELECT DISTINCT account_id FROM daily_snapshot
+    c.execute('''SELECT DISTINCT account_id FROM positions
                  WHERE user_id = ? AND date = ?''', (user_id, latest_date))
     account_ids = [r['account_id'] for r in c.fetchall()]
     info = get_account_info(c, user_id)
@@ -880,15 +869,11 @@ def targets():
                 continue
             if pct >= 0:
                 clean[str(k)] = round(pct, 4)
-        storage.set_config_val(conn, user_id, f'targets_{account_id}', json.dumps(clean))
+        storage.set_targets(conn, user_id, account_id, clean)
         return jsonify({'account_id': account_id, 'targets': clean})
 
     account_id = request.args.get('account_id', 'ALL')
-    raw = storage.get_config_val(conn, user_id, f'targets_{account_id}', '{}')
-    try:
-        saved = json.loads(raw)
-    except Exception:
-        saved = {}
+    saved = storage.get_targets(conn, user_id, account_id)
     return jsonify({'account_id': account_id, 'targets': saved})
 
 
@@ -897,13 +882,10 @@ def targets():
 def trigger_refresh():
     user_id = g.user_id
     conn = get_db_g()
+    user = storage.get_user_by_id(conn, user_id)
 
-    last_manual = storage.get_config_val(conn, user_id, 'last_manual_refresh', '0')
+    last_ts = user['last_manual_at'] or 0 if user else 0
     now_ts = time.time()
-    try:
-        last_ts = float(last_manual)
-    except (ValueError, TypeError):
-        last_ts = 0
 
     cooldown = config['refresh_cooldown']
     elapsed = now_ts - last_ts
@@ -915,7 +897,7 @@ def trigger_refresh():
             'message': f'Please wait {remaining}s before refreshing again'
         }), 429
 
-    storage.set_config_val(conn, user_id, 'last_manual_refresh', str(now_ts))
+    storage.set_user_manual_at(conn, user_id, now_ts)
 
     new_date, is_new, error = refresh_user_data(user_id)
     if error:
@@ -938,20 +920,18 @@ def trigger_refresh():
 def get_status():
     user_id = g.user_id
     conn = get_db_g()
-
-    last_refresh = storage.get_config_val(conn, user_id, 'last_refresh', 'Never')
-    last_manual = storage.get_config_val(conn, user_id, 'last_manual_refresh', '0')
     user = storage.get_user_by_id(conn, user_id)
 
+    last_refresh = user['last_refresh'] if user else 'Never'
+    last_ts = user['last_manual_at'] if user else 0
+    if last_ts is None:
+        last_ts = 0
+
     now_ts = time.time()
-    try:
-        last_ts = float(last_manual)
-        cooldown_remaining = max(0, int(config['refresh_cooldown'] - (now_ts - last_ts)))
-    except (ValueError, TypeError):
-        cooldown_remaining = 0
+    cooldown_remaining = max(0, int(config['refresh_cooldown'] - (now_ts - last_ts)))
 
     return jsonify({
-        'last_refresh': last_refresh,
+        'last_refresh': last_refresh or 'Never',
         'refresh_cooldown_remaining': cooldown_remaining,
         'flex_status': user['flex_status'] if user else 'unknown',
     })
@@ -986,12 +966,7 @@ def admin_list_users():
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
-# Create tables if they don't exist (idempotent)
-conn = get_db()
-storage.init_db(conn)
-return_db(conn)
-
-# Check: admin emails → set is_admin flag on next login
+# Admin emails → set is_admin flag on next login
 admin_emails = config.get('admin_emails', [])
 if admin_emails:
     conn = get_db()

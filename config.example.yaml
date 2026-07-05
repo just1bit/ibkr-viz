@@ -30,12 +30,9 @@ secret_key: "CHANGE_ME_GENERATE_A_RANDOM_64_CHAR_HEX_STRING"
 #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 flex_encryption_key: "CHANGE_ME_GENERATE_A_FERNET_KEY"
 
-# --- Database ----------------------------------------------------------------
-# "sqlite" — local single-file DB (development / single-user only)
-# "postgres" — production multi-user (requires PostgreSQL server)
-db_type: "sqlite"
-db_path: "ibkr_portfolio.db"             # SQLite only
-postgres_url: ""                          # PostgreSQL only: postgresql://user:pass@host:5432/dbname
+# --- Database (PostgreSQL) --------------------------------------------------
+# PostgreSQL connection URL. Run backend/schema.sql to create tables first.
+postgres_url: "postgresql://user:pass@host:5432/dbname"
 
 # --- S3 Raw XML Archive (optional — leave s3_bucket empty to disable) ---------
 # Compatible with AWS S3, Cloudflare R2, MinIO.

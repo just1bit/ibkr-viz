@@ -36,14 +36,17 @@
 python3 -m venv venv && source venv/bin/activate
 pip install -r backend/requirements.txt
 
-# 2. 创建配置文件
-cp config.example.yaml config.local.yaml
-# 编辑 config.local.yaml，填入 Google OAuth 凭证等（见下方配置说明）
+# 2. 初始化数据库（仅首次）
+psql -d <dbname> -f backend/schema.sql
 
-# 3. 构建前端（产物由 Flask 托管）
+# 3. 创建配置文件
+cp config.example.yaml config.local.yaml
+# 编辑 config.local.yaml，填入 PostgreSQL URL、Google OAuth 凭证等
+
+# 4. 构建前端（产物由 Flask 托管）
 cd frontend && npm install && npm run build && cd ..
 
-# 4. 启动（默认端口 5123）
+# 5. 启动（默认端口 5123）
 python backend/app.py
 # 访问 http://localhost:5123
 ```
@@ -69,7 +72,7 @@ python backend/app.py
 
 | 配置组 | 键 | 说明 |
 |--------|----|------|
-| 数据库 | `db_type` / `db_path` / `postgres_url` | sqlite（单用户开发）或 postgres（多用户生产）|
+| 数据库 | `postgres_url` | PostgreSQL 连接 URL。先执行 `psql -d <db> -f backend/schema.sql` 初始化表 |
 | 对象存储 | `s3_*` | 原始 XML 按报表日存档到 S3/R2/MinIO（可选）|
 | 调度 | `market_timezone` / `report_ready_hour` | 报告周期判断以市场时区为基准 |
 | 调度 | `fetch_retry_backoff` / `refresh_cooldown` / `scheduler_max_workers` | 节流与并发控制 |
@@ -136,7 +139,7 @@ IBKR Flex Web Service
    原始 XML ──→ S3（可选，用于审计与重解析）
         │  flex_parser.py
         ▼
-   结构化数据 ──→ storage.py ──→ SQLite / PostgreSQL
+   结构化数据 ──→ storage.py ──→ PostgreSQL
         │  (所有数据表以 user_id 分区)
         ▼
    Flask API ──→ React SPA（ECharts 渲染）
@@ -147,18 +150,15 @@ IBKR Flex Web Service
 
 | 表 | 用途 |
 |----|------|
-| `users` | 用户身份：Google 信息、加密的 Flex Token、Flex Query ID、连接状态 |
-| `sessions` | 服务端会话记录（支持强制登出） |
-| `user_fetch_log` | 每次数据拉取的审计日志 |
-| `daily_snapshot` | 每日持仓快照（PK: user_id + date + account_id + ticker）|
-| `current_state` | 最新净值组成（PK: user_id + account_id）|
-| `account_info` | 账户档案（PK: user_id + account_id）|
-| `config` | 用户级键值配置（PK: user_id + key）|
-| `schema_migrations` | 数据库迁移版本记录 |
+| `users` | 用户身份、加密 Flex 凭证、刷新状态 |
+| `sessions` | 服务端会话记录 |
+| `accounts` | 每账户 NAV 组成 + 档案元数据 |
+| `positions` | 每日持仓快照 |
+| `targets` | 每用户每账户的目标占比 |
+| `fetch_log` | 数据拉取审计日志 |
 
-- **按报表周期拉取**：后台每小时自检所有配置了 Flex 凭证的用户，使用 `ThreadPoolExecutor` 并行刷新
+- **按报表周期拉取**：后台每小时使用 `ThreadPoolExecutor` 并行刷新所有已配置用户
 - **S3 冗余**：原始 XML 上传 S3 并验证后再写 DB
-- **双数据库**：`storage.py` 自动处理 SQLite/PostgreSQL 差异与连接池
 
 ---
 
@@ -170,7 +170,7 @@ IBKR Flex Web Service
 | 加密 | Fernet (cryptography) 对称加密用户 Flex Token |
 | 前端 | Vite + React 18 + TypeScript + Tailwind CSS v4，ECharts 5 |
 | 后端 | Python Flask 3 + APScheduler + ThreadPoolExecutor |
-| 数据库 | SQLite（单用户）/ PostgreSQL（多用户，含连接池）|
+| 数据库 | PostgreSQL（连接池）|
 | 原始存储 | S3 兼容（AWS S3 / Cloudflare R2 / MinIO），可选 |
 | 部署 | 前端构建产物由 Flask 托管，单进程启动 |
 
