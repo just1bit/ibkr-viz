@@ -1,73 +1,50 @@
 # =============================================================================
-# IBKR Portfolio Viz — Deployment Configuration Template
-#
-# Copy to config.local.yaml and fill in real values:
-#   cp config.example.yaml config.local.yaml
-# config.local.yaml is git-ignored — secrets never enter version control.
-#
-# Keys left empty or omitted use the defaults shown below.
+# IBKR Portfolio Viz — Config Template
+# Copy to config.local.yaml and fill in your values.
+# config.local.yaml is git-ignored.
 # =============================================================================
 
-# --- Google OAuth (REQUIRED) -------------------------------------------------
-# Create a project at https://console.cloud.google.com/ →
-#   APIs & Services → Credentials → Create Credentials → OAuth client ID
-# Application type: Web application
-# Authorized redirect URI: {base_url}/auth/callback
-#   (e.g. http://localhost:5123/auth/callback for development)
-google_client_id: "YOUR_CLIENT_ID.apps.googleusercontent.com"
-google_client_secret: "GOCSPX-YOUR_SECRET_HERE"
-
-# Public URL of this app, used to construct the OAuth redirect URI.
-# Must match exactly what is registered in Google Cloud Console.
+# --- Google OAuth (required) --------------------------------------------------
+# Create OAuth 2.0 Web Application at https://console.cloud.google.com
+# Add {base_url}/auth/callback as authorized redirect URI.
+google_client_id: ""
+google_client_secret: ""
 base_url: "http://localhost:5123"
 
-# --- Session & Encryption (REQUIRED) -----------------------------------------
-# Generate a random 64-char hex string:
-#   python -c "import secrets; print(secrets.token_hex(32))"
-secret_key: "CHANGE_ME_GENERATE_A_RANDOM_64_CHAR_HEX_STRING"
+# --- Session & Encryption (required) ------------------------------------------
+# Generate: python -c "import secrets; print(secrets.token_hex(32))"
+secret_key: ""
+# Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+flex_encryption_key: ""
 
-# Generate a Fernet key (used to encrypt per-user IBKR Flex tokens at rest):
-#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-flex_encryption_key: "CHANGE_ME_GENERATE_A_FERNET_KEY"
-
-# --- Database (PostgreSQL) --------------------------------------------------
-# PostgreSQL connection URL. Run backend/schema.sql to create tables first.
+# --- Database (required) ------------------------------------------------------
+# PostgreSQL only. Run backend/schema.sql to create tables first.
 postgres_url: "postgresql://user:pass@host:5432/dbname"
 
-# --- S3 Raw XML Archive (optional — leave s3_bucket empty to disable) ---------
+# --- IBKR Flex ----------------------------------------------------------------
+flex_max_wait: 30          # seconds, max wait for IBKR Flex response
+
+# --- S3 Storage (optional) ----------------------------------------------------
+# Leave s3_bucket empty to skip S3. Raw XML is archived per report date.
 # Compatible with AWS S3, Cloudflare R2, MinIO.
 s3_bucket: ""
-s3_endpoint: ""                          # empty = default AWS; R2/MinIO fill endpoint
+s3_endpoint: ""
 s3_region: "auto"
 s3_access_key: ""
 s3_secret_key: ""
-s3_prefix: "flex_raw/"                   # object key prefix
+s3_prefix: "flex_raw/"
 
-# --- Data Refresh & Rate Limiting --------------------------------------------
-# All report-cycle decisions use market timezone, with per-user override
-# available (set in the UI after login).
+# --- Refresh Scheduling -------------------------------------------------------
 market_timezone: "America/New_York"
+report_ready_hour: 1       # hour in market TZ when IBKR report is expected
+fetch_retry_backoff: 3600  # seconds between retries when report is missing
+refresh_cooldown: 600      # seconds between manual refresh clicks per user
+scheduler_max_workers: 8   # max concurrent users during hourly refresh
 
-# In the market timezone, the daily report for trading day T is expected to be
-# published by IBKR starting at this hour on T+1 (observed: ~00:15-00:30 ET).
-report_ready_hour: 1
-
-# Minimum seconds between IBKR fetch attempts per user when the expected
-# report keeps failing to appear (market holiday, IBKR delay).
-fetch_retry_backoff: 3600
-
-# Minimum seconds between manual refresh clicks (per user).
-refresh_cooldown: 600
-
-# Maximum concurrent user refreshes during the hourly scheduler tick.
-scheduler_max_workers: 8
-
-# --- Admin (optional) --------------------------------------------------------
-# Google account emails in this list get admin privileges (view all users,
-# force-logout, etc.). Set via OAuth email matching on next login.
+# --- Admin (optional) ---------------------------------------------------------
+# Google account emails listed here get admin privileges on next login.
 admin_emails: []
-  # - admin@example.com
 
-# --- Server ------------------------------------------------------------------
+# --- Server -------------------------------------------------------------------
 port: 5123
 debug: true
