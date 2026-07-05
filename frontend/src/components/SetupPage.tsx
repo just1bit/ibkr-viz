@@ -37,10 +37,13 @@ export function SetupPage() {
     setConfigureError('')
     setStep('saving')
     try {
-      await configureFlex(token.trim(), queryId.trim())
+      const result = await configureFlex(token.trim(), queryId.trim())
+      if (result.fetch_error) {
+        setConfigureError(result.fetch_error)
+        setStep('test_done')
+        return
+      }
       setStep('saved')
-      // The AuthProvider will re-fetch user and App.tsx will detect
-      // has_flex_query = true and redirect to Dashboard
     } catch (err) {
       setConfigureError((err as Error).message)
       setStep('test_done')
@@ -58,7 +61,6 @@ export function SetupPage() {
         </p>
 
         <div className="mt-7 space-y-4">
-          {/* Flex Token */}
           <div>
             <label className="mb-1.5 block text-[13px] font-medium text-text">
               Flex Web Service Token
@@ -81,7 +83,6 @@ export function SetupPage() {
             </div>
           </div>
 
-          {/* Query ID */}
           <div>
             <label className="mb-1.5 block text-[13px] font-medium text-text">
               Flex Query ID
@@ -95,7 +96,6 @@ export function SetupPage() {
             />
           </div>
 
-          {/* Actions */}
           <div className="flex gap-3">
             <button
               onClick={handleTest}
@@ -128,7 +128,6 @@ export function SetupPage() {
             </button>
           </div>
 
-          {/* Error */}
           {error && (
             <div className="rounded-[10px] border border-neg/30 bg-neg/6 px-3 py-2.5 text-[13px] text-neg">
               {error}
@@ -140,7 +139,6 @@ export function SetupPage() {
             </div>
           )}
 
-          {/* Test result */}
           {testResult && step !== 'input' && (
             <div className="rounded-[12px] border border-pos/30 bg-pos/5 p-4">
               <p className="text-[13px] font-medium text-pos">
@@ -150,7 +148,7 @@ export function SetupPage() {
               <ul className="mt-1 space-y-0.5">
                 {testResult.accounts.map((a) => (
                   <li key={a.account_id} className="text-[13px] text-text">
-                    • {a.alias || a.account_id}{' '}
+                    &bull; {a.alias || a.account_id}{' '}
                     <span className="text-faint">({a.account_id}) — {a.account_type}</span>
                   </li>
                 ))}
@@ -161,7 +159,7 @@ export function SetupPage() {
 
         <p className="mt-6 text-[12px] text-faint">
           Find your token and query ID in IBKR Client Portal → Performance &amp; Reports
-          → Flex Queries. The token is stored encrypted.
+          → Flex Queries. Your token is stored encrypted.
         </p>
       </div>
     </div>

@@ -114,10 +114,3 @@ export interface ConfigureResult {
   report_date?: string
   fetch_error?: string
 }
-
-/** Result from GET /api/setup/status */
-export interface SetupStatus {
-  flex_status: string
-  flex_query_id: string
-  has_flex_query: boolean
-}

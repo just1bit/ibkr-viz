@@ -1,6 +1,6 @@
 """Storage: PostgreSQL connection pool, user/session/targets CRUD, S3."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # ---------------------------------------------------------------------------
 # Database connection (PostgreSQL only)
@@ -174,7 +174,7 @@ def validate_session(conn, session_id: str, user_id: str) -> bool:
     c.execute('''UPDATE sessions SET last_used_at = ?
                  WHERE session_id = ? AND last_used_at < ?''',
               (_utc_now(), session_id,
-               datetime.now(timezone.utc).replace(hour=-1).strftime('%Y-%m-%dT%H:%M:%SZ')))
+               (datetime.now(timezone.utc) - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')))
     conn.commit()
     return True
 
@@ -186,7 +186,7 @@ def delete_session(conn, session_id: str):
 
 
 def cleanup_expired_sessions(conn):
-    from datetime import timedelta
+    """Delete sessions older than 30 days."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
     c = conn.cursor()
     c.execute('DELETE FROM sessions WHERE last_used_at < ?', (cutoff,))
@@ -281,33 +281,33 @@ class S3Store:
         self.bucket = config['s3_bucket']
         self.prefix = config.get('s3_prefix', 'flex_raw/')
 
-    def _key(self, date_str):
-        return f'{self.prefix}{date_str}.xml'
+    def _key(self, user_id, date_str):
+        return f'{self.prefix}{user_id}/{date_str}.xml'
 
-    def save_raw_xml(self, date_str, xml_text):
+    def save_raw_xml(self, user_id, date_str, xml_text):
         if not self.enabled:
             return
-        key = self._key(date_str)
+        key = self._key(user_id, date_str)
         self.client.put_object(
             Bucket=self.bucket, Key=key,
             Body=xml_text.encode('utf-8'),
             ContentType='application/xml',
         )
 
-    def get_raw_xml(self, date_str):
+    def get_raw_xml(self, user_id, date_str):
         if not self.enabled:
             return None
-        key = self._key(date_str)
+        key = self._key(user_id, date_str)
         try:
             resp = self.client.get_object(Bucket=self.bucket, Key=key)
             return resp['Body'].read().decode('utf-8')
         except Exception:
             return None
 
-    def verify_raw_xml(self, date_str) -> bool:
+    def verify_raw_xml(self, user_id, date_str) -> bool:
         if not self.enabled:
             return True
-        key = self._key(date_str)
+        key = self._key(user_id, date_str)
         try:
             self.client.head_object(Bucket=self.bucket, Key=key)
             return True

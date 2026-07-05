@@ -108,14 +108,8 @@ def return_db(conn):
 # ---------------------------------------------------------------------------
 @app.before_request
 def load_session():
-    """Validate the server-side session record on every request.
-
-    Flask's signed cookie carries {user_id, session_id}. We cross-check
-    against the sessions table so we can invalidate sessions server-side
-    (logout, admin force-logout, expiry).
-    """
-    # Allow auth routes and static assets through without session check
-    if request.path.startswith('/auth/') or request.path.startswith('/assets/'):
+    """Validate the server-side session record on every request."""
+    if request.path in ('/auth/login', '/auth/callback') or request.path.startswith('/assets/'):
         return
 
     sid = session.get('session_id')
@@ -125,10 +119,9 @@ def load_session():
         if storage.validate_session(conn, sid, uid):
             g.user_id = uid
             g.session_id = sid
-            g._db_conn = conn  # reuse this conn in routes via get_db_g()
+            g._db_conn = conn
             return
         return_db(conn)
-    # Invalid or missing → clear cookie
     session.clear()
 
 
@@ -141,10 +134,12 @@ def close_db_conn(exc):
 
 
 def get_db_g():
-    """Return the request-scoped DB connection (set by load_session)."""
+    """Return the request-scoped DB connection (set by load_session or on demand)."""
     if hasattr(g, '_db_conn') and g._db_conn is not None:
         return g._db_conn
-    return get_db()
+    conn = get_db()
+    g._db_conn = conn
+    return conn
 
 
 # ---------------------------------------------------------------------------
@@ -245,19 +240,43 @@ def store_report(conn, user_id, data, report_date):
 
 
 # ---------------------------------------------------------------------------
+# XML local cache (single latest file per user)
+# ---------------------------------------------------------------------------
+FLEX_CACHE_DIR = os.path.join(BASE_DIR, 'flex_cache')
+os.makedirs(FLEX_CACHE_DIR, exist_ok=True)
+
+
+def _cache_path(user_id):
+    return os.path.join(FLEX_CACHE_DIR, f'{user_id}.xml')
+
+
+def _read_cache(user_id):
+    path = _cache_path(user_id)
+    if os.path.exists(path):
+        with open(path, 'r', encoding='utf-8') as f:
+            return f.read()
+    return None
+
+
+def _write_cache(user_id, xml_text):
+    path = _cache_path(user_id)
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(xml_text)
+
+
+# ---------------------------------------------------------------------------
 # Per-user data refresh
 # ---------------------------------------------------------------------------
 def _safe_log_error(user_id, error_code, error_detail,
                     report_date=None, duration_ms=None):
-    """Log a fetch error. Never throws — failures here are silently dropped
-    so the original caller's error is not cascaded."""
+    """Log a fetch error. Never throws."""
     conn = None
     try:
         conn = get_db()
         storage.log_fetch_error(conn, user_id, error_code, error_detail,
                                 report_date, duration_ms)
         failures = storage.count_consecutive_failures(conn, user_id)
-        if error_code in ('FLEX_AUTH', 'FLEX_PARSE'):
+        if error_code in ('FLEX_AUTH', 'FLEX_PARSE', 'FLEX_FAIL'):
             storage.set_user_flex_status(conn, user_id, 'needs_attention')
         elif failures >= 6:
             storage.set_user_flex_status(conn, user_id, 'needs_attention')
@@ -271,59 +290,132 @@ def _safe_log_error(user_id, error_code, error_detail,
             return_db(conn)
 
 
-def _cleanup_temp(path):
-    """Remove a temp file. Never throws."""
-    if path and os.path.exists(path):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+def _store_parsed_data(user_id, data, report_date):
+    """Store parsed Flex data to DB. Returns error string or None."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute('''SELECT COUNT(*) AS cnt FROM positions
+                     WHERE user_id = ? AND date = ?''', (user_id, report_date))
+        if c.fetchone()['cnt'] == 0:
+            store_report(conn, user_id, data, report_date)
+
+        storage.set_user_last_refresh(conn, user_id, report_date)
+        storage.set_user_fetch_at(conn, user_id, time.time())
+        storage.set_user_flex_status(conn, user_id, 'healthy')
+        storage.log_fetch_success(conn, user_id, report_date, 0)
+        conn.commit()
+    except Exception as e:
+        _safe_log_error(user_id, 'DB_INSERT', str(e), report_date, 0)
+        return f'Database insert failed: {e}'
+    finally:
+        return_db(conn)
+    return None
 
 
 def refresh_user_data(user_id):
-    """Fetch IBKR Flex data for one user. Returns (report_date, is_new, error).
-    DB connection is released before the network call and re-acquired after."""
-    # ---- Phase 1: DB read --------------------------------------------------
+    """Check DB → S3 → local cache. NO IBKR call.
+
+    Used by configure and trigger-refresh. Returns (report_date, is_new, error).
+    """
     conn = get_db()
     try:
         user = storage.get_user_by_id(conn, user_id)
         if not user or not user['flex_token_enc'] or not user['flex_query_id']:
             return None, False, 'Flex credentials not configured'
 
-        try:
-            flex_token = storage.decrypt_flex_token(config, user['flex_token_enc'])
-        except Exception as e:
-            return None, False, f'Token decryption failed: {e}'
-
-        query_id = user['flex_query_id']
-
-        # Determine expected report date for this user
         tz = ZoneInfo(user['market_timezone']) if user.get('market_timezone') else MARKET_TZ
         now_mkt = datetime.now(tz)
         expected = _expected_report_date(now_mkt)
 
         c = conn.cursor()
-        c.execute('SELECT MAX(date) AS latest FROM positions WHERE user_id = ?',
-                  (user_id,))
+        c.execute('SELECT MAX(date) AS latest FROM positions WHERE user_id = ?', (user_id,))
         row = c.fetchone()
         latest_stored = row['latest'] if row else None
 
         if latest_stored and latest_stored >= expected:
             return latest_stored, False, None
+    finally:
+        return_db(conn)
+
+    # ---- DB missing → try S3 ----
+    xml_text = s3_store.get_raw_xml(user_id, expected)
+    if xml_text:
+        _write_cache(user_id, xml_text)
+        try:
+            data = flex_parser.parse_flex_xml(xml_text)
+        except Exception as e:
+            return None, False, f'S3 recovery parse failed: {e}'
+        err = _store_parsed_data(user_id, data, expected)
+        if err:
+            return None, False, err
+        return expected, True, None
+
+    # ---- S3 missing → try local cache ----
+    xml_text = _read_cache(user_id)
+    if xml_text:
+        try:
+            data = flex_parser.parse_flex_xml(xml_text)
+        except Exception as e:
+            return None, False, f'Local cache parse failed: {e}'
+
+        report_date = data['date']
+        err = _store_parsed_data(user_id, data, report_date)
+        if err:
+            return None, False, err
+        # Re-upload to S3 (best-effort)
+        try:
+            s3_store.save_raw_xml(user_id, report_date, xml_text)
+        except Exception:
+            pass
+        return report_date, True, None
+
+    return None, False, 'No data available'
+
+
+def fetch_and_store(user_id):
+    """Call IBKR Flex, cache locally, archive to S3, parse, store to DB.
+
+    This is the ONLY function that calls IBKR. Used by:
+      - test-flex (user-initiated, via background thread)
+      - scheduled_refresh (hourly automated)
+
+    Returns (report_date, is_new, error, accounts_list).
+    """
+    conn = get_db()
+    try:
+        user = storage.get_user_by_id(conn, user_id)
+        if not user or not user['flex_token_enc'] or not user['flex_query_id']:
+            return None, False, 'Flex credentials not configured', None
+
+        flex_token = storage.decrypt_flex_token(config, user['flex_token_enc'])
+        query_id = user['flex_query_id']
+        tz = ZoneInfo(user['market_timezone']) if user.get('market_timezone') else MARKET_TZ
+        now_mkt = datetime.now(tz)
+        expected = _expected_report_date(now_mkt)
+
+        c = conn.cursor()
+        c.execute('SELECT MAX(date) AS latest FROM positions WHERE user_id = ?', (user_id,))
+        row = c.fetchone()
+        latest_stored = row['latest'] if row else None
+
+        if latest_stored and latest_stored >= expected:
+            c.execute('SELECT account_id, alias, account_type FROM accounts WHERE user_id = ?',
+                      (user_id,))
+            accounts = [{'account_id': r['account_id'], 'alias': r['alias'],
+                         'account_type': r['account_type']} for r in c.fetchall()]
+            return latest_stored, False, None, accounts
 
         last_attempt = user['last_fetch_at'] or 0
-
         if time.time() - last_attempt < config['fetch_retry_backoff']:
-            return latest_stored, False, None
+            return latest_stored, False, None, None
 
         storage.set_user_fetch_at(conn, user_id, time.time())
     finally:
         return_db(conn)
 
-    # ---- Phase 2: Network (no DB connection held) --------------------------
-    today_str = now_mkt.strftime('%Y-%m-%d')
-    local_path = os.path.join(BASE_DIR, f'flex_raw_{user_id}_{today_str}.xml')
     t0 = time.time()
+    local_path = _cache_path(user_id)
 
     try:
         xml_text = flex_client.get_flex_xml(
@@ -333,65 +425,39 @@ def refresh_user_data(user_id):
         )
     except flex_client.FlexClientError as e:
         elapsed_ms = int((time.time() - t0) * 1000)
-        _safe_log_error(user_id,
-                        'FLEX_AUTH' if 'Error' in str(e) else 'FLEX_TIMEOUT',
-                        str(e), expected, elapsed_ms)
-        _cleanup_temp(local_path)
-        return None, False, f'IBKR fetch failed: {e}'
+        error_code = ('FLEX_AUTH' if 'Error' in str(e)
+                      else 'FLEX_FAIL' if 'Fail' in str(e)
+                      else 'FLEX_TIMEOUT')
+        _safe_log_error(user_id, error_code, str(e), expected, elapsed_ms)
+        return None, False, f'IBKR fetch failed: {e}', None
     except Exception as e:
         elapsed_ms = int((time.time() - t0) * 1000)
         _safe_log_error(user_id, 'FLEX_TIMEOUT', str(e), expected, elapsed_ms)
-        _cleanup_temp(local_path)
-        return None, False, f'IBKR fetch failed: {e}'
+        return None, False, f'IBKR fetch failed: {e}', None
 
     try:
         data = flex_parser.parse_flex_xml(xml_text)
     except Exception as e:
         elapsed_ms = int((time.time() - t0) * 1000)
         _safe_log_error(user_id, 'FLEX_PARSE', str(e), expected, elapsed_ms)
-        _cleanup_temp(local_path)
-        return None, False, f'Parse failed: {e} — raw XML at {local_path}'
+        return None, False, f'Parse failed: {e}', None
 
     report_date = data['date']
+    accounts = [{'account_id': a['account_id'], 'alias': a['alias'],
+                 'account_type': a['account_type']} for a in data['accounts']]
 
-    s3_store.save_raw_xml(report_date, xml_text)
-    if not s3_store.verify_raw_xml(report_date):
-        elapsed_ms = int((time.time() - t0) * 1000)
-        _safe_log_error(user_id, 'S3_UPLOAD', 'S3 verification failed',
-                        report_date, elapsed_ms)
-        _cleanup_temp(local_path)
-        return None, False, f'S3 upload verification failed — raw XML at {local_path}'
+    # Store to DB
+    err = _store_parsed_data(user_id, data, report_date)
+    if err:
+        return None, False, err, accounts
 
-    # ---- Phase 3: DB write -------------------------------------------------
-    conn = get_db()
+    # S3 archive (best-effort)
     try:
-        c = conn.cursor()
-        c.execute('''SELECT COUNT(*) AS cnt FROM positions
-                     WHERE user_id = ? AND date = ?''', (user_id, report_date))
-        already_stored = c.fetchone()['cnt'] > 0
+        s3_store.save_raw_xml(user_id, report_date, xml_text)
+    except Exception:
+        pass
 
-        if not already_stored:
-            store_report(conn, user_id, data, report_date)
-
-        storage.set_user_last_refresh(conn, user_id, report_date)
-        storage.set_user_fetch_at(conn, user_id, time.time())
-        storage.set_user_flex_status(conn, user_id, 'healthy')
-
-        elapsed_ms = int((time.time() - t0) * 1000)
-        storage.log_fetch_success(conn, user_id, report_date, elapsed_ms)
-        conn.commit()
-    except Exception as e:
-        elapsed_ms = int((time.time() - t0) * 1000)
-        _safe_log_error(user_id, 'DB_INSERT', str(e), report_date, elapsed_ms)
-        _cleanup_temp(local_path)
-        return None, False, f'Database insert failed: {e} — raw XML at {local_path}'
-    finally:
-        return_db(conn)
-
-    # Success — clean up temp file
-    _cleanup_temp(local_path)
-
-    return report_date, (not already_stored), None
+    return report_date, True, None, accounts
 
 
 # ---------------------------------------------------------------------------
@@ -410,14 +476,14 @@ def scheduled_refresh():
     max_workers = config.get('scheduler_max_workers', 8)
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(refresh_user_data, u['user_id']): u['user_id']
+        futures = {pool.submit(fetch_and_store, u['user_id']): u['user_id']
                    for u in users}
         for future in as_completed(futures):
             user_id = futures[future]
             try:
                 future.result()
             except Exception:
-                pass  # per-user errors already logged in refresh_user_data
+                pass  # per-user errors already logged in fetch_and_store
 
 
 def setup_scheduler():
@@ -533,7 +599,6 @@ def auth_login():
 @app.route('/auth/callback')
 def auth_callback():
     """Handle Google OAuth callback: exchange code, verify id_token, upsert user."""
-    # Validate state (CSRF)
     state = request.args.get('state', '')
     if not state or state != session.pop('oauth_state', None):
         return 'Invalid state parameter — possible CSRF attack.', 400
@@ -577,26 +642,29 @@ def auth_callback():
     name = id_info.get('name', email)
 
     conn = get_db()
-    user = storage.get_user_by_google_sub(conn, google_sub)
+    try:
+        user = storage.get_user_by_google_sub(conn, google_sub)
 
-    if user:
-        storage.update_user_login(conn, user['user_id'], name)
-        user_id = user['user_id']
-    else:
-        user_id = str(uuid.uuid4())
-        storage.create_user(conn, user_id, email, name, google_sub)
+        if user:
+            storage.update_user_login(conn, user['user_id'], name)
+            user_id = user['user_id']
+        else:
+            user_id = str(uuid.uuid4())
+            storage.create_user(conn, user_id, email, name, google_sub)
 
-    # Create server-side session
-    session_id = str(uuid.uuid4())
-    storage.create_session(conn, session_id, user_id,
-                           ip_address=request.remote_addr,
-                           user_agent=request.headers.get('User-Agent', ''))
-    return_db(conn)
+        # Create server-side session
+        session_id = str(uuid.uuid4())
+        storage.create_session(conn, session_id, user_id,
+                               ip_address=request.remote_addr,
+                               user_agent=request.headers.get('User-Agent', ''))
+    finally:
+        return_db(conn)
 
     # Set signed cookie
     session['user_id'] = user_id
     session['session_id'] = session_id
     session.permanent = True
+    print(f'[LOG] callback cookie set, redirecting to /', flush=True)
 
     return redirect('/')
 
@@ -641,7 +709,12 @@ def auth_logout():
 @app.route('/api/setup/test-flex', methods=['POST'])
 @login_required
 def setup_test_flex():
-    """Test Flex credentials without saving. Returns account list on success."""
+    """Test Flex credentials, then async full pipeline (cache → S3 → parse → DB).
+
+    IBKR is called exactly once here. On success, the full data pipeline runs
+    in a background thread so the user gets a quick response. On failure,
+    a clear error message is returned.
+    """
     body = request.get_json(silent=True) or {}
     flex_token = (body.get('token') or '').strip()
     flex_query_id = (body.get('query_id') or '').strip()
@@ -649,41 +722,28 @@ def setup_test_flex():
     if not flex_token or not flex_query_id:
         return jsonify({'error': 'Token and Query ID are required.'}), 400
 
-    try:
-        xml_text = flex_client.get_flex_xml(
-            flex_token, flex_query_id, max_wait=config['flex_max_wait'])
-    except flex_client.FlexClientError as e:
-        msg = str(e)
-        if 'Error' in msg:
-            if 'token' in msg.lower():
-                return jsonify({'error': 'Token not recognized by IBKR. Copy it directly from your IBKR Flex Query page.'}), 400
-            elif 'query' in msg.lower():
-                return jsonify({'error': 'Query ID not found. Check the ID in your IBKR Flex Query configuration.'}), 400
-            else:
-                return jsonify({'error': f'IBKR error: {msg}'}), 400
-        return jsonify({'error': f'IBKR Flex Web Service is temporarily unavailable. Please try again later. ({msg})'}), 502
-    except Exception as e:
-        return jsonify({'error': f'Cannot connect. Check your internet connection. ({e})'}), 502
+    # Save credentials first so fetch_and_store can read them
+    conn = get_db_g()
+    storage.set_user_flex_credentials(conn, config, g.user_id, flex_token, flex_query_id)
 
-    try:
-        data = flex_parser.parse_flex_xml(xml_text)
-    except Exception as e:
-        return jsonify({
-            'error': 'Your Flex Query may be missing required sections. '
-                     'Ensure it includes: Open Positions, Equity Summary, MTM Performance.'
-        }), 400
+    # Call IBKR + full pipeline synchronously (IBKR fetch is the slow part,
+    # parse + DB + S3 is fast enough to do inline)
+    report_date, is_new, error, accounts = fetch_and_store(g.user_id)
 
-    accounts = [
-        {'account_id': a['account_id'], 'alias': a['alias'], 'account_type': a['account_type']}
-        for a in data['accounts']
-    ]
-    return jsonify({'status': 'ok', 'accounts': accounts, 'report_date': data['date']})
+    if error:
+        return jsonify({'error': error}), 502
+
+    return jsonify({
+        'status': 'ok',
+        'accounts': accounts or [],
+        'report_date': report_date,
+    })
 
 
 @app.route('/api/setup/configure', methods=['POST'])
 @login_required
 def setup_configure():
-    """Save Flex credentials and trigger initial data fetch."""
+    """Save Flex credentials. Data should already exist from test-flex."""
     body = request.get_json(silent=True) or {}
     flex_token = (body.get('token') or '').strip()
     flex_query_id = (body.get('query_id') or '').strip()
@@ -694,21 +754,25 @@ def setup_configure():
     conn = get_db_g()
     storage.set_user_flex_credentials(conn, config, g.user_id, flex_token, flex_query_id)
 
-    # Trigger initial data fetch
+    # Check DB → local cache only (no IBKR call — test-flex already did it)
     report_date, is_new, error = refresh_user_data(g.user_id)
 
     user = storage.get_user_by_id(conn, g.user_id)
-    result = {
+
+    if error:
+        return jsonify({
+            'status': 'error',
+            'flex_status': user['flex_status'],
+            'has_flex_query': True,
+            'fetch_error': error,
+        }), 502
+
+    return jsonify({
         'status': 'ok',
         'flex_status': user['flex_status'],
         'has_flex_query': True,
-    }
-    if report_date:
-        result['report_date'] = report_date
-    if error:
-        result['fetch_error'] = error
-
-    return jsonify(result)
+        'report_date': report_date,
+    })
 
 
 @app.route('/api/setup/status')

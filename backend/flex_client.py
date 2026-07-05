@@ -64,10 +64,10 @@ def get_flex_xml(
         raise FlexClientError(f"SendRequest XML parse error: {e}")
 
     status = root.findtext('.//Status')
-    if status == 'Error':
+    if status in ('Error', 'Fail'):
         error_code = root.findtext('.//ErrorCode', '')
         error_msg = root.findtext('.//ErrorMessage', 'Unknown error')
-        raise FlexClientError(f"Flex error {error_code}: {error_msg}")
+        raise FlexClientError(f"Flex {status} {error_code}: {error_msg}")
 
     ref_code = root.findtext('.//ReferenceCode')
     if not ref_code:
