@@ -104,9 +104,7 @@ app = Flask(__name__, static_folder=None)
 app.logger.setLevel(_log_level)
 
 logger = logging.getLogger(__name__)
-logger.info("postgres_url=%s", '***' if config['postgres_url'] else 'EMPTY')
-logger.info("google_client_id=%s", '***' if config['google_client_id'] else 'EMPTY')
-logger.info("base_url=%s", config['base_url'])
+
 app.config.update(
     SECRET_KEY=config['secret_key'],
     SESSION_COOKIE_HTTPONLY=True,
@@ -696,7 +694,6 @@ def auth_callback():
     session['user_id'] = user_id
     session['session_id'] = session_id
     session.permanent = True
-    print(f'[LOG] callback cookie set, redirecting to /', flush=True)
 
     return redirect('/')
 
