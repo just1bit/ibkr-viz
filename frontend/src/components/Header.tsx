@@ -17,6 +17,7 @@ interface Props {
   onRefreshed: () => void
   user: UserProfile
   onLogout: () => void
+  onSettings?: () => void
 }
 
 export function Header({
@@ -30,6 +31,7 @@ export function Header({
   onRefreshed,
   user,
   onLogout,
+  onSettings,
 }: Props) {
   const { isDark, toggle } = useTheme()
   const [cooldown, setCooldown] = useState(0)
@@ -127,7 +129,7 @@ export function Header({
             {isDark ? <SunIcon /> : <MoonIcon />}
           </IconButton>
 
-          <UserMenu user={user} onLogout={onLogout} />
+          <UserMenu user={user} onLogout={onLogout} onSettings={onSettings} />
         </div>
       </div>
     </header>

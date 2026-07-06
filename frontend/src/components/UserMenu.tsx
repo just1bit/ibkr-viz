@@ -4,9 +4,10 @@ import type { UserProfile } from '../lib/types'
 interface Props {
   user: UserProfile
   onLogout: () => void
+  onSettings?: () => void
 }
 
-export function UserMenu({ user, onLogout }: Props) {
+export function UserMenu({ user, onLogout, onSettings }: Props) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -37,6 +38,14 @@ export function UserMenu({ user, onLogout }: Props) {
             <div className="truncate text-[11px] text-faint">{user.email}</div>
           </div>
           <div className="my-1 border-t border-border" />
+          {onSettings && (
+            <button
+              onClick={() => { onSettings(); setOpen(false) }}
+              className="flex w-full items-center rounded-[9px] px-3 py-2 text-left text-[13px] text-text transition-colors hover:bg-surface-2"
+            >
+              IBKR Settings
+            </button>
+          )}
           <button
             onClick={() => { onLogout(); setOpen(false) }}
             className="flex w-full items-center rounded-[9px] px-3 py-2 text-left text-[13px] text-text transition-colors hover:bg-surface-2"

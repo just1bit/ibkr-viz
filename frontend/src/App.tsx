@@ -31,16 +31,21 @@ function AppContent() {
     return <LoginPage />
   }
 
-  // Authenticated but Flex not configured → setup flow
-  if (user && !user.has_flex_query) {
-    return <SetupPage />
+  // Flex not configured → setup flow
+  const [showSettings, setShowSettings] = useState(false)
+
+  if (user && (!user.has_flex_query || showSettings)) {
+    return <SetupPage onDone={() => setShowSettings(false)} />
   }
 
-  // Authenticated + Flex configured → dashboard
-  return <Dashboard user={user!} onLogout={logout} />
+  return <Dashboard user={user!} onLogout={logout} onSettings={() => setShowSettings(true)} />
 }
 
-function Dashboard({ user, onLogout }: { user: NonNullable<ReturnType<typeof useAuth>['user']>; onLogout: () => void }) {
+function Dashboard({ user, onLogout, onSettings }: {
+  user: NonNullable<ReturnType<typeof useAuth>['user']>
+  onLogout: () => void
+  onSettings: () => void
+}) {
   const { account, setAccount, portfolio, accounts, targets, loading, error, reload, saveTargets } = useDashboard()
   const [hidden, setHidden] = useState(false)
   const [status, setStatus] = useState<Status | null>(null)
@@ -66,6 +71,7 @@ function Dashboard({ user, onLogout }: { user: NonNullable<ReturnType<typeof use
         onRefreshed={onRefreshed}
         user={user}
         onLogout={onLogout}
+        onSettings={onSettings}
       />
 
       <ConnectionBanner user={user} />

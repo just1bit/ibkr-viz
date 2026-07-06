@@ -13,18 +13,38 @@ def connect(config):
     """Return a dict-like DB-API connection from the PostgreSQL pool."""
     import psycopg2
     import psycopg2.extras
+    import psycopg2.extensions
 
     global _pg_pool
     if _pg_pool is None:
         from psycopg2.pool import ThreadedConnectionPool
-        _pg_pool = ThreadedConnectionPool(2, 10, config['postgres_url'])
+        _pg_pool = ThreadedConnectionPool(
+            2, 10, config['postgres_url'],
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=5,
+        )
 
     class _CompatCursor(psycopg2.extras.RealDictCursor):
         def execute(self, query, vars=None):
             return super().execute(query.replace('?', '%s'), vars)
 
-    conn = _pg_pool.getconn()
-    conn.cursor_factory = _CompatCursor
+    # Retry loop: Azure may have killed idle pooled connections
+    for attempt in range(3):
+        conn = _pg_pool.getconn()
+        conn.cursor_factory = _CompatCursor
+        try:
+            # Test the connection before returning
+            cur = conn.cursor()
+            cur.execute('SELECT 1')
+            cur.close()
+            return conn
+        except psycopg2.OperationalError:
+            _pg_pool.putconn(conn, close=True)
+            if attempt == 2:
+                raise
+    # unreachable
     return conn
 
 

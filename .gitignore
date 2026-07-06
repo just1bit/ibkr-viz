@@ -14,8 +14,8 @@ frontend/node_modules/
 frontend/dist/
 frontend/*.tsbuildinfo
 
-# Raw IBKR Flex XML (may contain PII)
-flex_raw_*.xml
+# Raw IBKR Flex XML
+flex_cache/
 
 # Editor
 .vscode/

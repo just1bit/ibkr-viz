@@ -3,7 +3,7 @@ import { useAuth } from '../hooks/useAuth'
 
 type Step = 'input' | 'testing' | 'test_done' | 'saving' | 'saved'
 
-export function SetupPage() {
+export function SetupPage({ onDone }: { onDone?: () => void }) {
   const { user, testFlex, configureFlex } = useAuth()
   const [token, setToken] = useState('')
   const [queryId, setQueryId] = useState('')
@@ -44,6 +44,7 @@ export function SetupPage() {
         return
       }
       setStep('saved')
+      setTimeout(() => onDone?.(), 600)
     } catch (err) {
       setConfigureError((err as Error).message)
       setStep('test_done')
