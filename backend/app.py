@@ -70,6 +70,21 @@ def load_config():
         with open(cfg_path) as f:
             user_cfg = yaml.safe_load(f) or {}
         defaults.update(user_cfg)
+
+    # Environment variable overrides (for cloud deployment)
+    for key, default_val in list(defaults.items()):
+        env_val = os.environ.get(key.upper())
+        if env_val is None:
+            continue
+        if isinstance(default_val, bool):
+            defaults[key] = env_val.lower() in ('1', 'true', 'yes')
+        elif isinstance(default_val, int):
+            defaults[key] = int(env_val)
+        elif isinstance(default_val, list):
+            defaults[key] = [v.strip() for v in env_val.split(',') if v.strip()]
+        else:
+            defaults[key] = env_val
+
     return defaults
 
 
