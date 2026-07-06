@@ -68,23 +68,23 @@ def load_config():
     }
     if os.path.exists(cfg_path):
         with open(cfg_path) as f:
-            user_cfg = yaml.safe_load(f) or {}
-        defaults.update(user_cfg)
+            defaults.update(yaml.safe_load(f) or {})
 
-    # Environment variable overrides (for cloud deployment)
-    for key, default_val in list(defaults.items()):
-        env_val = os.environ.get(key.upper())
-        if env_val is None:
+    return _apply_env_overrides(defaults)
+
+
+def _apply_env_overrides(defaults):
+    env = {k.lower(): v for k, v in os.environ.items()}
+    cast = {
+        bool: lambda v: v.lower() in ('1', 'true', 'yes'),
+        int: lambda v: int(v),
+        list: lambda v: [x.strip() for x in v.split(',') if x.strip()],
+    }
+    for key, val in list(defaults.items()):
+        ev = env.get(key.lower())
+        if ev is None:
             continue
-        if isinstance(default_val, bool):
-            defaults[key] = env_val.lower() in ('1', 'true', 'yes')
-        elif isinstance(default_val, int):
-            defaults[key] = int(env_val)
-        elif isinstance(default_val, list):
-            defaults[key] = [v.strip() for v in env_val.split(',') if v.strip()]
-        else:
-            defaults[key] = env_val
-
+        defaults[key] = cast.get(type(val), lambda v: v)(ev)
     return defaults
 
 
