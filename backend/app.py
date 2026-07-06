@@ -3,6 +3,7 @@
 Google OAuth, per-user encrypted IBKR Flex credentials, user-scoped data.
 """
 
+import logging
 import os
 import time
 import uuid
@@ -65,6 +66,7 @@ def load_config():
         # Server
         'port': 5123,
         'debug': True,
+        'log_level': 'INFO',
     }
     if os.path.exists(cfg_path):
         with open(cfg_path) as f:
@@ -89,7 +91,22 @@ def _apply_env_overrides(defaults):
 
 
 config = load_config()
+
+_log_level = getattr(logging, config.get('log_level', 'INFO').upper(), logging.INFO)
+logging.basicConfig(
+    level=_log_level,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    force=True,
+)
+
 app = Flask(__name__, static_folder=None)
+app.logger.setLevel(_log_level)
+
+logger = logging.getLogger(__name__)
+logger.info("postgres_url=%s", '***' if config['postgres_url'] else 'EMPTY')
+logger.info("google_client_id=%s", '***' if config['google_client_id'] else 'EMPTY')
+logger.info("base_url=%s", config['base_url'])
 app.config.update(
     SECRET_KEY=config['secret_key'],
     SESSION_COOKIE_HTTPONLY=True,
