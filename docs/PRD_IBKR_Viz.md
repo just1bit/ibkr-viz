@@ -1,151 +1,77 @@
-# PRD：IBKR 美股持仓占比与再平衡工具
+# PRD — IBKR Portfolio Viz
 
-## 1. 项目概述
+A lightweight web tool for IBKR investors to visualize position weights, monitor allocation drift, and plan rebalancing. Cash is treated as a position — every dollar of the portfolio is accounted for.
 
-轻量级 Web 工具，通过 IBKR Flex Web Service 拉取真实持仓数据，**围绕"投资组合中每个持仓的占比"展开**：可视化各持仓的权重分布、监控占比变化，并提供再平衡（rebalance）辅助计算与提示。现金（cash）被视为一种持仓纳入占比统计——账户里没有买入的资金同样是配置的一部分。在占比主线之外，页面同时呈现报表里直接给出的当日表现（每持仓 MTM 盈亏与价格变动）、净值构成（股票/期权/现金/应计）与收支汇总（MTD/YTD 股息、利息、佣金等）。本工具**不**关注收益率曲线或净值随时间的走势。前后端分离：Flask 提供 JSON API，独立 React SPA 负责展示。支持 PC 与移动端，深浅双主题，按日刷新。
+## Users
 
-## 2. 目标用户
+- Individual IBKR investors managing equity/option portfolios
+- Those with target asset allocations who rebalance periodically
+- Multi-account holders who need consolidated or per-account views
 
-- IBKR 美股个人投资者，需要清晰掌握各持仓占比并据此调仓的人
-- 有目标资产配置、希望按目标比例做再平衡的人
-- 同时管理多个子账户、需要切换或合并查看的用户
+## Features
 
-## 3. 功能需求
+### Data Pipeline
 
-> **状态标注**：✅ 已实现 · 🔜 待开发
+- Fetch from IBKR Flex Web Service on demand or via scheduled refresh
+- XML saved locally, archived to S3, parsed into PostgreSQL
+- Fallback chain: DB → S3 → local cache (IBKR called at most once per fetch cycle)
+- Hourly background scheduler, market-timezone-aware, with retry backoff
 
-### 3.1 数据获取
+### Accounts & Overview
 
-| 编号 | 需求 | 状态 |
-|------|------|------|
-| D-01 | Flex Web Service 接入：配置 Token 与 Query ID，服务端拉取报表，原始 XML 存入对象存储，解析后落库 | ✅ |
-| D-02 | 后台每小时自检（以市场时区判断新报告是否应已发布），前端展示最新报表日 | ✅ |
-| D-03 | 手动刷新按钮，带冷却限制（频率受限）| ✅ |
-| D-04 | 按报表发布周期拉取：最新应发布的报表已入库或未到发布时间则不请求 IBKR；报表缺失时带退避重试（最多每小时一次） | ✅ |
+- Multi-account detection with aliases and metadata badges
+- KPI cards: net liquidation, day P&L, equity breakdown, cash with accruals
+- One-click hide amounts for privacy
 
-### 3.2 账户与概览
+### Positions & Allocation
 
-| 编号 | 需求 | 状态 |
-|------|------|------|
-| A-01 | 多子账户自动识别并列出 | ✅ |
-| A-02 | 子账户切换：顶部下拉，选中后仅展示该账户数据 | ✅ |
-| A-03 | 合并视图："All accounts" 将各子账户合并统计 | ✅ |
-| A-04 | KPI 概览卡：净值、当日盈亏、市值（附股票/期权拆分）、现金（附应计小计）；盈亏以涨绿跌红展示 | ✅ |
-| A-05 | 全局金额隐藏：一键切换，模糊所有金额，便于公共场合查看 | ✅ |
-| A-06 | 账户别名贯穿全站：下拉、持仓表、账户拆分均显示 XML acctAlias（如 Invest/Trade），裸账户 ID 仅作辅助 | ✅ |
-| A-07 | 账户档案徽章：账户类型（MARGIN/CASH）、SYEP、DRIP、开户日期（AccountInformation 直取）| ✅ |
+- Donut chart: ticker and asset class views with hover-linked legend
+- Day P&L attribution bar chart per position
+- Sortable positions table with cost basis, option details, day-change tags
 
-### 3.3 持仓占比（环形图）
+### Rebalancing
 
-| 编号 | 需求 | 状态 |
-|------|------|------|
-| C-01 | 个股权重视图（默认）：环形图按市值排序，过小持仓合并为 "Others" | ✅ |
-| C-03 | 资产配置视图：按 Asset Class 汇总 | ✅ |
-| C-04 | 双视图 Tab 切换（Holdings / Asset class）| ✅ |
-| C-05 | 图例与扇区双向高亮联动；中心显示总额或选中项占比 | ✅ |
-| C-06 | 图例：PC 端置于图右侧，移动端置于图下方 | ✅ |
-| C-07 | 现金作为一类持仓纳入占比：所有视图中 cash 都作为一块（asset class = CASH），占比分母为「证券市值 + 现金」，全部扇区之和为 100%。现金固定以中性灰色显示，区别于证券 | ✅ |
-| C-08 | Holdings 视图悬浮提示展示该持仓的当日盈亏（XML MTM 摘要直取，涨绿跌红）| ✅ |
+- Side-by-side current vs. target weight, drift in percentage points, buy/sell suggestions
+- Targets persist per account to the server
+- Reset to current weights, save to keep
 
-### 3.4 持仓明细与当日表现
+### NAV & Income
 
-| 编号 | 需求 | 状态 |
-|------|------|------|
-| P-01 | 持仓明细表（通栏）：代码/名称、资产类别徽章、数量、市价、当日涨跌%（prevClosePrice→closePrice）、当日盈亏、市值、权重条 | ✅ |
-| P-02 | 期权持仓展示合约条款：Call/Put、行权价、到期日、剩余天数、乘数；符号折叠为「BRK B 500C」式短格式 | ✅ |
-| P-03 | 当日有交易的持仓加标记（MTM prevCloseQuantity ≠ closeQuantity），悬浮显示数量变化 | ✅ |
-| P-04 | 表格可按持仓/当日%/当日盈亏/市值排序；合并视图下每行带账户别名徽章 | ✅ |
-| P-05 | 成本与未实现盈亏列：Flex 报表提供 costBasis/fifoPnlUnrealized 后自动点亮（当前 OpenPositions 为 SUMMARY 级，值为 0 时隐藏列）| ✅ |
-| G-01 | 当日盈亏归因图：每持仓一根分叉横条（涨绿跌红），MTM 直取；悬浮显示前收→收盘价与涨跌% | ✅ |
+- NAV composition: stock, options, cash, dividend/interest accruals
+- Income summary from CashReport with MTD/YTD toggle
 
-### 3.5 净值构成与收支
+### UX
 
-| 编号 | 需求 | 状态 |
-|------|------|------|
-| E-01 | NAV 构成卡：股票/期权/现金/股息应计/利息应计（EquitySummary 直取），负现金（融资负债）红色显示并不计入比例条 | ✅ |
-| E-02 | 合并视图下按账户拆分：别名、类型/SYEP/DRIP 徽章、开户日、净值、当日盈亏 | ✅ |
-| F-01 | 收支卡（CashReport BASE_SUMMARY 直取）：MTD/YTD 切换；收入（股息、代付股息、预扣税）、成本（佣金、融资利息）、活动（出入金、卖出额、买入额）| ✅ |
+- Light/dark theme with system preference detection
+- Responsive layout
+- Google OAuth login with per-user data isolation
 
-### 3.6 再平衡（Rebalance）
-
-| 编号 | 需求 | 状态 |
-|------|------|------|
-| B-01 | 再平衡表：逐行列出各持仓（含 cash）的「当前占比 / 目标占比 / 偏离(pp) / 建议操作」 | ✅ |
-| B-02 | 目标占比可逐行编辑，按账户分别保存到服务端，刷新/切换账户后保留 | ✅ |
-| B-03 | 偏离 = 当前占比 − 目标占比；建议操作 = 目标市值 − 当前市值，正值提示买入金额、负值提示卖出金额，接近零显示「—」 | ✅ |
-| B-04 | 目标占比合计实时显示，偏离 100% 时高亮提示 | ✅ |
-| B-05 | Reset：将所有目标一键设为当前占比（偏离归零）；Save：持久化当前编辑 | ✅ |
-| B-06 | 全局隐藏金额时，建议操作的金额一并模糊；占比/偏离等比率不模糊 | ✅ |
-| B-07 | 未设目标时默认以当前占比为目标，使工具开箱即用、初始无偏离 | ✅ |
-
-### 3.7 主题与布局
-
-| 编号 | 需求 | 状态 |
-|------|------|------|
-| L-01 | 深浅双主题：默认跟随系统，可手动切换并持久化，加载前应用避免闪烁 | ✅ |
-| L-02 | 响应式布局：概览卡与图表卡随视口自适应列数，移动端单列堆叠；持仓表横向滚动 | ✅ |
-| L-03 | 触摸目标友好，主要内容水平居中 | ✅ |
-| L-04 | 页面信息层级（自上而下）：KPI 行 → 今日视图（占比环形图 + 当日盈亏归因）→ 持仓明细表（通栏）→ 计划与背景（再平衡 + NAV 构成 + 收支）| ✅ |
-
-### 3.8 待开发
-
-| 编号 | 需求 | 状态 |
-|------|------|------|
-| T-01 | 持仓占比日变动：在图例/再平衡表中展示各持仓占比相较前一交易日的变化（涨/跌 pp）| 🔜 |
-| T-02 | 再平衡下单清单导出：把建议买卖金额换算成股数清单，便于直接下单 | 🔜 |
-| T-03 | 目标占比合计自动归一化（一键把各目标按比例缩放到合计 100%）| 🔜 |
-| T-04 | 多币种现金明细（CashReport Currency 级 CNH/HKD 行）| 🔜 |
-| T-05 | 股票借出视图：NetStockPositionSummary 的 sharesAtIb / netShares 差额（SYEP 借出量）| 🔜 |
-
-## 4. 非功能需求
-
-| 编号 | 需求 | 状态 |
-|------|------|------|
-| N-01 | 前端为独立构建的 SPA，构建产物由 Flask 托管 | ✅ |
-| N-02 | 后端 Flask，支持 SQLite（本地）与 PostgreSQL（生产），单命令启动 | ✅ |
-| N-03 | Flex Token 存于服务端配置，不暴露给前端 | ✅ |
-| N-04 | 兼容主流桌面与移动浏览器近两个大版本 | ✅ |
-| N-05 | Mock 模式：无凭证时以模拟数据运行 | ✅ |
-| N-06 | 原始 Flex XML 存入 S3 兼容对象存储，用于审计与重解析 | ✅ |
-
-## 5. 技术栈
-
-| 层 | 方案 |
-|----|------|
-| 前端 | Vite + React + TypeScript + Tailwind CSS，ECharts 按需引入 |
-| 后端 | Python Flask + APScheduler（每小时自检，市场时区判断是否拉取）|
-| 数据库 | SQLite（本地）/ PostgreSQL（生产），storage.py 抽象层自动适配 |
-| 原始存储 | S3 兼容对象存储（AWS S3 / Cloudflare R2 / MinIO）|
-| 部署 | 前端构建后由 Flask 托管，单进程启动 |
-
-## 6. API 设计
-
-| 端点 | 用途 |
-|------|------|
-| `GET /api/portfolio` | 最新持仓与分类汇总（环形图 + 图例 + 持仓表 + 再平衡表数据源）；现金作为持仓纳入，占比由前端按市值实时计算。额外返回 `equity`（NAV 构成）、`cash_report`（MTD/YTD 收支）、`aliases`（账户别名）|
-| `GET /api/targets` | 读取该账户已保存的再平衡目标占比 `{ticker: pct}` |
-| `POST /api/targets` | 保存该账户的目标占比（body：`{account_id, targets}`；服务端过滤非数字/负值）|
-| `GET /api/accounts` | 子账户列表（含别名、账户类型、SYEP/DRIP、税批方法、开户日）|
-| `GET /api/status` | 刷新状态（上次刷新时间、冷却剩余）|
-| `GET /api/trigger-refresh` | 触发手动刷新（带冷却限制）|
-
-GET 端点均接受 `account_id` 参数；`ALL` 表示合并视图。目标占比按 `account_id` 分别存储。Flask 同时托管前端构建产物。
-
-## 7. 数据架构
+## Data Architecture
 
 ```
-IBKR Flex Web Service
-        │  flex_client.py
-        ▼
-   原始 XML ──→ S3（可选）
-        │  flex_parser.py
-        ▼
-   结构化数据 ──→ storage.py ──→ SQLite / PostgreSQL
-        │
-        ▼
-   Flask API ──→ React SPA（ECharts 渲染）
+IBKR Flex → Raw XML → Local cache → S3 archive
+                  ↓
+              Parser → PostgreSQL (user-scoped)
+                  ↓
+              Flask API → React SPA
 ```
 
-- 五张表：每日持仓快照（daily_snapshot：数量、市值、市价、成本、未实现盈亏、当日盈亏、前收价/前收数量、期权条款（行权价/到期/方向/乘数/标的）、上市交易所，全部直取 XML，不做本地推算）、每日净值构成（nav_history：净值、现金、股票、期权、股息/利息应计、当日盈亏，取自 EquitySummary 与 MTM 汇总行）、收支汇总（cash_report：MTD/YTD 佣金、融资利息、股息、代付股息、预扣税、出入金、买卖额，取自 CashReport BASE_SUMMARY）、账户档案（account_info：别名、类型、SYEP/DRIP、税批方法、开户日，取自 AccountInformation）、键值配置（config，含按账户保存的再平衡目标占比 `targets_<account_id>`）
-- 按报表周期拉取：数据按报表日（XML toDate）入库，最新应发布报表已入库则不请求 IBKR
-- S3 原始存储为可选；storage.py 自动处理两种数据库的占位符差异
+**Six tables:** users, sessions, accounts (NAV + metadata), positions, targets, fetch_log. All scoped by `user_id`.
+
+## Tech Stack
+
+| Layer | Stack |
+|-------|-------|
+| Frontend | React + TypeScript + Tailwind CSS + ECharts |
+| Backend | Python Flask + APScheduler + gunicorn |
+| Database | PostgreSQL |
+| Storage | S3-compatible (optional) |
+| Auth | Google OAuth 2.0 + server-side sessions |
+
+## Roadmap
+
+- Position weight day-over-day change display
+- Rebalance export as order-ready share quantities
+- Target weight normalization
+- Multi-currency cash breakdown
+- Stock lending (SYEP) view
