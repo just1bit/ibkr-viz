@@ -28,7 +28,7 @@ export function AccountSelect({ accounts, value, onChange, hidden }: Props) {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex h-9 items-center gap-2 rounded-[10px] border border-border bg-surface px-3 text-[13px] font-medium text-text transition-colors hover:bg-surface-2"
+        className="flex h-11 items-center gap-2 rounded-[10px] border border-border bg-surface px-3 text-[13px] font-medium text-text transition-colors hover:bg-surface-2 sm:h-9"
       >
         <span className="max-w-[140px] truncate">{label}</span>
         <svg className="h-3 w-3 text-faint" viewBox="0 0 12 12" fill="none">
@@ -40,7 +40,7 @@ export function AccountSelect({ accounts, value, onChange, hidden }: Props) {
         <div className="absolute left-0 top-full z-50 mt-1 w-[calc(100vw-3rem)] max-w-[280px] rounded-[12px] border border-border bg-surface p-1 shadow-lg">
           <button
             onClick={() => { onChange('ALL'); setOpen(false) }}
-            className={`flex w-full items-center justify-between rounded-[9px] px-3 py-2 text-left ${
+            className={`flex min-h-11 w-full items-center justify-between rounded-[9px] px-3 py-2 text-left ${
               value === 'ALL' ? 'bg-surface-2' : 'hover:bg-surface-2'
             }`}
           >
@@ -50,7 +50,7 @@ export function AccountSelect({ accounts, value, onChange, hidden }: Props) {
             <button
               key={a.account_id}
               onClick={() => { onChange(a.account_id); setOpen(false) }}
-              className={`flex w-full items-center justify-between rounded-[9px] px-3 py-2 text-left ${
+              className={`flex min-h-11 w-full items-center justify-between rounded-[9px] px-3 py-2 text-left ${
                 value === a.account_id ? 'bg-surface-2' : 'hover:bg-surface-2'
               }`}
             >

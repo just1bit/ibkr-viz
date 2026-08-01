@@ -75,7 +75,7 @@ function Dashboard({ user, onLogout, onSettings }: {
 
       <ConnectionBanner user={user} />
 
-      <main className="mx-auto max-w-7xl px-4 py-5 sm:px-6 sm:py-7">
+      <main className="safe-bottom mx-auto max-w-7xl px-4 py-5 sm:px-6 sm:py-7">
         {error ? (
           <ErrorState message={error} onRetry={reload} />
         ) : loading && !portfolio ? (

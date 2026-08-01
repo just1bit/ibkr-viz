@@ -27,6 +27,37 @@ const NEUTRAL_GRAY = '#8b8b94'
 const round1 = (n: number) => Math.round(n * 10) / 10
 
 /**
+ * Round allocation weights to tenths while preserving an exact 100.0% total.
+ * The largest-remainder method avoids making the final row absorb all of the
+ * visible rounding error.
+ */
+function allocationWeights(holdings: Holding[], total: number): Record<string, number> {
+  const result: Record<string, number> = {}
+  if (total <= 0 || holdings.length === 0) return result
+
+  const parts = holdings.map((h, index) => {
+    const exactTenths = (Math.max(h.market_value, 0) / total) * 1000
+    const floorTenths = Math.floor(exactTenths)
+    return {
+      symbol: displaySymbol(h),
+      index,
+      floorTenths,
+      remainder: exactTenths - floorTenths,
+    }
+  })
+  let unitsLeft = 1000 - parts.reduce((sum, p) => sum + p.floorTenths, 0)
+  parts.sort((a, b) => b.remainder - a.remainder || a.index - b.index)
+  for (const part of parts) {
+    if (unitsLeft > 0) {
+      part.floorTenths += 1
+      unitsLeft -= 1
+    }
+  }
+  for (const part of parts) result[part.symbol] = part.floorTenths / 10
+  return result
+}
+
+/**
  * Unified holdings view — donut chart on the left, positions + rebalance
  * table on the right. Only ticker-level allocation. Hover links the donut
  * sector to its table row and vice versa.
@@ -102,18 +133,13 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
   }
 
   // ── Rebalance state ──
-  const curPcts = useMemo(() => {
-    const m: Record<string, number> = {}
-    for (const h of rows) {
-      // IBKR supplies this value for an individual account.  ALL has no
-      // consolidated percentOfNAV row, so its weight remains calculated from
-      // the merged holdings.
-      m[displaySymbol(h)] = showAccount
-        ? (investedValue > 0 ? (h.market_value / investedValue) * 100 : 0)
-        : h.xml_percent_of_nav!
-    }
-    return m
-  }, [rows, investedValue, showAccount])
+  // Rebalance weights are an allocation of invested securities, not a
+  // percent of NAV. Keeping cash/margin outside this denominator makes the
+  // target model stable for both cash and leveraged accounts.
+  const curPcts = useMemo(
+    () => allocationWeights(rows, rows.reduce((sum, h) => sum + Math.max(h.market_value, 0), 0)),
+    [rows],
+  )
 
   const defaults = useMemo(() => {
     const d: Record<string, string> = {}
@@ -129,7 +155,7 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
 
   const tgtPct = (sym: string) => { const v = parseFloat(edits[sym]); return Number.isFinite(v) ? v : 0 }
   const targetSum = rows.reduce((s, h) => s + tgtPct(displaySymbol(h)), 0)
-  const balanced = Math.abs(targetSum - 100) < 0.1
+  const balanced = Math.abs(targetSum - 100) < 0.0001
   const dirty = rows.some((h) => {
     const sym = displaySymbol(h)
     return String(tgtPct(sym)) !== String(round1(savedTargets[sym] ?? curPcts[sym] ?? 0))
@@ -166,8 +192,8 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
           <span className={`text-[11px] font-medium tabular-nums ${balanced ? 'text-faint' : 'text-warn'}`}>
             Targets {targetSum.toFixed(1)}%
           </span>
-          <button onClick={reset} className="rounded-[8px] px-2 py-0.5 text-[11px] font-medium text-faint transition-colors hover:text-text">Reset</button>
-          <button onClick={save} disabled={saving || !dirty || !balanced} className="rounded-[8px] bg-accent px-2.5 py-0.5 text-[11px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40">
+          <button onClick={reset} className="h-11 rounded-[8px] px-3 text-[11px] font-medium text-faint transition-colors hover:text-text sm:h-auto sm:px-2 sm:py-0.5">Reset</button>
+          <button onClick={save} disabled={saving || !dirty || !balanced} className="h-11 rounded-[8px] bg-accent px-3 text-[11px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40 sm:h-auto sm:px-2.5 sm:py-0.5">
             {saving ? 'Saving…' : 'Save'}
           </button>
         </div>
@@ -211,7 +237,7 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
         </div>
 
         {/* Table */}
-        <div className="min-w-0 flex-1 overflow-x-auto scroll-thin">
+        <div className="hidden min-w-0 flex-1 overflow-x-auto scroll-thin sm:block">
           <table className="w-full min-w-[680px] border-collapse text-[12px]">
             <thead>
               <tr className="text-[10px] font-medium uppercase tracking-wide text-faint">
@@ -280,14 +306,14 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
                     </Td>
                     <Td align="right">
                       <input
-                        type="number" inputMode="numeric" min={0} step={1}
+                        type="number" inputMode="decimal" min={0} step={0.1}
                         value={edits[sym] ?? ''}
                         onChange={(e) => setEdits((p) => ({ ...p, [sym]: e.target.value }))}
                         onBlur={(e) => {
                           const v = parseFloat(e.target.value)
-                          if (Number.isFinite(v)) setEdits((p) => ({ ...p, [sym]: String(Math.round(v)) }))
+                          if (Number.isFinite(v)) setEdits((p) => ({ ...p, [sym]: String(round1(v)) }))
                         }}
-                        className="w-14 rounded-[6px] border border-border bg-surface-2 px-1.5 py-0.5 text-right tabular-nums text-[12px] text-text outline-none focus:border-accent"
+                        className="w-14 rounded-[6px] border border-border bg-surface-2 px-1.5 py-0.5 text-right tabular-nums text-[16px] text-text outline-none focus:border-accent sm:text-[12px]"
                       />
                     </Td>
                     <Td align="right" className={Math.abs(driftPp) < 0.05 ? 'text-faint' : 'text-muted'}>
@@ -301,6 +327,75 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
               })}
             </tbody>
           </table>
+        </div>
+
+        {/* Mobile holdings list: keeps allocation and rebalance controls in
+            view instead of hiding them beyond a 680px horizontal table. */}
+        <div className="min-w-0 flex-1 space-y-2 sm:hidden">
+          {rows.map((h) => {
+            const sym = displaySymbol(h)
+            const cur = curPcts[sym] ?? 0
+            const tgt = tgtPct(sym)
+            const driftPp = cur - tgt
+            const trade = (investedValue * tgt) / 100 - h.market_value
+            const action = Math.abs(trade) < investedValue * 0.0005 ? null
+              : trade < 0 ? { label: 'Sell', amt: -trade, tone: 'text-neg' }
+              : { label: 'Buy', amt: trade, tone: 'text-pos' }
+
+            return (
+              <div key={`${h.account_id}-${h.ticker}-mobile`} className="rounded-[12px] border border-border/70 bg-surface-2/35 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: slices.find((s) => s.name === sym)?.color ?? NEUTRAL_GRAY }} />
+                      <span className="font-semibold text-text">{sym}</span>
+                      <span className={`rounded-full px-1.5 py-px text-[9px] font-semibold tracking-wide ${CLASS_TONE[h.asset_class] ?? 'bg-faint/10 text-muted'}`}>{h.asset_class}</span>
+                    </div>
+                    <div className="mt-1 truncate text-[10px] text-faint">{h.full_name}</div>
+                  </div>
+                  <div className={`shrink-0 text-right text-[13px] font-semibold tabular-nums text-text ${hidden ? 'masked' : ''}`}>
+                    {fmtUSDFull(h.market_value, hidden)}
+                  </div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border/60 pt-3">
+                  <MobileMetric label="Day P/L">
+                    <span className={`font-medium ${tone(h.day_pnl)} ${hidden ? 'masked' : ''}`}>
+                      {h.day_pnl >= 0 ? '+' : ''}{fmtUSDFull(h.day_pnl, hidden)}
+                      <span className="ml-1 text-[10px]">{h.prev_close_price ? `(${dayPct(h) >= 0 ? '+' : ''}${dayPct(h).toFixed(2)}%)` : ''}</span>
+                    </span>
+                  </MobileMetric>
+                  <MobileMetric label="Weight / drift">
+                    <span className="text-text">{cur.toFixed(1)}%</span>
+                    <span className={`ml-1 text-[10px] ${Math.abs(driftPp) < 0.05 ? 'text-faint' : 'text-muted'}`}>
+                      ({driftPp >= 0 ? '+' : ''}{driftPp.toFixed(1)}pp)
+                    </span>
+                  </MobileMetric>
+                  <MobileMetric label="Target">
+                    <label className="inline-flex items-center gap-1">
+                      <input
+                        aria-label={`${sym} target weight`}
+                        type="number" inputMode="decimal" min={0} step={0.1}
+                        value={edits[sym] ?? ''}
+                        onChange={(e) => setEdits((p) => ({ ...p, [sym]: e.target.value }))}
+                        onBlur={(e) => {
+                          const v = parseFloat(e.target.value)
+                          if (Number.isFinite(v)) setEdits((p) => ({ ...p, [sym]: String(round1(v)) }))
+                        }}
+                        className="h-11 w-20 rounded-[8px] border border-border bg-surface px-2 text-right text-[16px] tabular-nums text-text outline-none focus:border-accent"
+                      />
+                      <span className="text-muted">%</span>
+                    </label>
+                  </MobileMetric>
+                  <MobileMetric label="Action">
+                    <span className={`font-medium ${action ? action.tone : 'text-faint'}`}>
+                      {action ? `${action.label} ${fmtUSD(action.amt, hidden)}` : '—'}
+                    </span>
+                  </MobileMetric>
+                </div>
+              </div>
+            )
+          })}
         </div>
       </div>
     </div>
@@ -330,6 +425,15 @@ function Th({ label, align, active, onClick }: { label: string; align: 'left' | 
 
 function Td({ align, className = '', children }: { align: 'left' | 'right'; className?: string; children: React.ReactNode }) {
   return <td className={`px-1.5 py-3 tabular-nums text-muted ${align === 'right' ? 'text-right' : ''} ${className}`}>{children}</td>
+}
+
+function MobileMetric({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <div className="mb-1 text-[9px] font-medium uppercase tracking-wide text-faint">{label}</div>
+      <div className="min-h-10 text-[12px] tabular-nums text-muted">{children}</div>
+    </div>
+  )
 }
 
 // ── Donut chart option ──
