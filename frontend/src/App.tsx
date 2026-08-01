@@ -22,6 +22,7 @@ export default function App() {
 
 function AppContent() {
   const { authState, user, logout } = useAuth()
+  const [showSettings, setShowSettings] = useState(false)
 
   if (authState.status === 'loading') {
     return <FullPageSkeleton />
@@ -32,8 +33,6 @@ function AppContent() {
   }
 
   // Flex not configured → setup flow
-  const [showSettings, setShowSettings] = useState(false)
-
   if (user && (!user.has_flex_query || showSettings)) {
     return <SetupPage onDone={() => setShowSettings(false)} />
   }

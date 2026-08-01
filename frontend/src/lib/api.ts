@@ -1,7 +1,7 @@
 import type { Account, Portfolio, Status, Targets } from './types'
 
 async function getJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(url, { signal })
+  const res = await fetch(url, { signal, cache: 'no-store' })
   if (!res.ok) {
     let detail = ''
     try {
@@ -35,6 +35,7 @@ export const api = {
   saveTargets: async (accountId: string, targets: Targets) => {
     const res = await fetch('/api/targets', {
       method: 'POST',
+      cache: 'no-store',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ account_id: accountId, targets }),
     })
@@ -45,7 +46,7 @@ export const api = {
   status: (signal?: AbortSignal) => getJSON<Status>('/api/status', signal),
 
   triggerRefresh: async () => {
-    const res = await fetch('/api/trigger-refresh')
+    const res = await fetch('/api/trigger-refresh', { cache: 'no-store' })
     const data = await res.json()
     if (res.status === 429) {
       return { rateLimited: true, retryAfter: data.retry_after_seconds as number }

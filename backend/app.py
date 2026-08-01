@@ -114,6 +114,16 @@ app.config.update(
 )
 s3_store = storage.S3Store(config)
 
+
+@app.after_request
+def prevent_private_response_caching(response):
+    """Never let browser/proxy caches share one user's private API data."""
+    if request.path.startswith('/api/') or request.path.startswith('/auth/'):
+        response.headers['Cache-Control'] = 'no-store, private'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Vary'] = 'Cookie'
+    return response
+
 # All report-cycle decisions are made in the market's timezone.
 MARKET_TZ = ZoneInfo(config['market_timezone'])
 
@@ -224,9 +234,10 @@ def store_report(conn, user_id, data, report_date):
 
         c.execute('''INSERT INTO accounts
             (user_id, account_id, net_liquidation, cash_balance, stock_value,
-             options_value, dividend_accruals, interest_accruals, day_pnl,
+             options_value, dividend_accruals, interest_accruals,
+             previous_net_liquidation, day_pnl,
              alias, account_type, syep, drip, tax_lot_method, date_opened)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, account_id) DO UPDATE SET
              net_liquidation=excluded.net_liquidation,
              cash_balance=excluded.cash_balance,
@@ -234,6 +245,7 @@ def store_report(conn, user_id, data, report_date):
              options_value=excluded.options_value,
              dividend_accruals=excluded.dividend_accruals,
              interest_accruals=excluded.interest_accruals,
+             previous_net_liquidation=excluded.previous_net_liquidation,
              day_pnl=excluded.day_pnl,
              alias=excluded.alias,
              account_type=excluded.account_type,
@@ -244,6 +256,7 @@ def store_report(conn, user_id, data, report_date):
             (user_id, aid, acc['net_liquidation'], acc['cash_balance'],
              acc['stock_value'], acc['options_value'],
              acc['dividend_accruals'], acc['interest_accruals'],
+             acc.get('previous_net_liquidation'),
              acc['day_pnl'], acc['alias'], acc['account_type'],
              acc['syep'], acc['drip'], acc['tax_lot_method'],
              acc['date_opened']))
@@ -253,21 +266,22 @@ def store_report(conn, user_id, data, report_date):
                 (user_id, date, account_id, conid, ticker, full_name,
                  asset_class, side, quantity, market_value, mark_price,
                  cost_price, cost_basis, unrealized_pnl, day_pnl,
-                 prev_close_price, prev_close_quantity, multiplier,
+                 prev_close_price, prev_close_quantity, xml_percent_of_nav,
+                 multiplier,
                  strike, expiry, put_call, underlying_symbol,
                  listing_exchange, currency)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                 (user_id, report_date, aid, h['conid'], h['ticker'],
                  h['full_name'], h['asset_class'], h['side'],
                  h['quantity'], h['market_value'], h['mark_price'],
                  h['cost_price'], h['cost_basis'], h['unrealized_pnl'],
                  h['day_pnl'], h['prev_close_price'],
-                 h['prev_close_quantity'], h['multiplier'],
+                 h['prev_close_quantity'], h.get('xml_percent_of_nav'),
+                 h['multiplier'],
                  h['strike'], h['expiry'], h['put_call'],
                  h['underlying_symbol'], h['listing_exchange'],
                  h['currency']))
-
 
 # ---------------------------------------------------------------------------
 # XML local cache (single latest file per user)
@@ -537,17 +551,21 @@ def setup_scheduler():
 def account_summary(cursor, user_id, account_id):
     """NAV components / P&L totals for one account, or all merged."""
     cols = ('net_liquidation', 'cash_balance', 'stock_value', 'options_value',
-            'dividend_accruals', 'interest_accruals', 'day_pnl')
+            'dividend_accruals', 'interest_accruals',
+            'previous_net_liquidation', 'day_pnl')
     select = ', '.join(f'SUM({c}) AS {c}' for c in cols)
     if account_id == 'ALL':
         cursor.execute(f'SELECT {select} FROM accounts WHERE user_id = ?',
                        (user_id,))
     else:
         cursor.execute(f'''SELECT {select} FROM accounts
-                           WHERE user_id = ? AND account_id = ?''',
+                       WHERE user_id = ? AND account_id = ?''',
                        (user_id, account_id))
     row = cursor.fetchone()
-    return {c: round(row[c], 2) if row and row[c] is not None else 0 for c in cols}
+    return {
+        c: round(row[c], 2) if row and row[c] is not None else 0
+        for c in cols
+    }
 
 
 def get_account_info(cursor, user_id):
@@ -573,6 +591,7 @@ def build_holding(row):
         'day_pnl': row['day_pnl'],
         'prev_close_price': row['prev_close_price'],
         'prev_close_quantity': row['prev_close_quantity'],
+        'xml_percent_of_nav': row['xml_percent_of_nav'],
         'multiplier': row['multiplier'],
         'strike': row['strike'],
         'expiry': row['expiry'],
@@ -591,6 +610,7 @@ def cash_holding(amount, account_id):
         'mark_price': None, 'cost_price': None, 'cost_basis': None,
         'unrealized_pnl': 0, 'day_pnl': 0,
         'prev_close_price': None, 'prev_close_quantity': None,
+        'xml_percent_of_nav': None,
         'multiplier': None, 'strike': None, 'expiry': '', 'put_call': '',
         'underlying_symbol': '', 'listing_exchange': '', 'currency': 'USD',
         'account_id': account_id,
@@ -605,6 +625,20 @@ def group_summary(holdings, field):
         {'name': name, 'value': round(value, 2)}
         for name, value in sorted(sums.items(), key=lambda kv: kv[1], reverse=True)
     ]
+
+
+def _securities_value_from_xml(summary, holdings):
+    """Return gross securities value, preferring XML equity components.
+
+    EquitySummary exposes stock and option values directly.  Those cover all
+    asset classes currently represented by the UI.  Keep the position sum as
+    a compatibility path for a future Flex report containing an asset class
+    whose EquitySummary component is not yet stored by the parser.
+    """
+    supported = {'STOCK', 'ETF', 'OPTION'}
+    if holdings and all(h['asset_class'] in supported for h in holdings):
+        return round(summary['stock_value'] + summary['options_value'], 2)
+    return sum(h['market_value'] for h in holdings)
 
 
 # ---------------------------------------------------------------------------
@@ -904,7 +938,7 @@ def get_portfolio():
     info = get_account_info(c, user_id)
 
     holdings = [build_holding(r) for r in rows]
-    securities_value = sum(h['market_value'] for h in holdings)
+    securities_value = _securities_value_from_xml(summary, holdings)
 
     cash_value = round(max(summary['cash_balance'], 0), 2)
     if cash_value > 0:
@@ -921,6 +955,7 @@ def get_portfolio():
             'total_value': round(securities_value, 2),
             'net_liquidation': summary['net_liquidation'],
             'total_cash': summary['cash_balance'],
+            'previous_net_liquidation': summary['previous_net_liquidation'],
             'total_day_pnl': summary['day_pnl'],
         },
         'equity': {

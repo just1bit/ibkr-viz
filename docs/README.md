@@ -55,6 +55,19 @@ IBKR Flex Web Service
 
 **Scheduler:** Background job refreshes all users hourly, based on market timezone (America/New_York by default).
 
+**One-time release tasks:** Run the `Run release task` GitHub Actions
+workflow manually and enter a directory name under `release_tasks/`. The
+workflow validates the name and executes that directory's `run.sh`. Each task
+owns its dependencies and behavior, so new one-time requirements do not need
+changes to the workflow. The runner supplies the repository's scoped Azure
+identity; each task obtains only the settings it needs. No application table
+or custom execution history is created; rerunning a task executes it again.
+
+For the XML-native data release, run `xml-native-values` before deploying the
+business-code change. It adds the two required columns, downloads every stored
+snapshot's exact raw XML from S3, validates all keys and values, and commits the
+backfill only after the complete source set passes validation.
+
 **Tables (all scoped by `user_id`):**
 
 | Table | Purpose |
