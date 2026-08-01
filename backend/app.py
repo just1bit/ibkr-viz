@@ -114,6 +114,16 @@ app.config.update(
 )
 s3_store = storage.S3Store(config)
 
+
+@app.after_request
+def prevent_private_response_caching(response):
+    """Never let browser/proxy caches share one user's private API data."""
+    if request.path.startswith('/api/') or request.path.startswith('/auth/'):
+        response.headers['Cache-Control'] = 'no-store, private'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Vary'] = 'Cookie'
+    return response
+
 # All report-cycle decisions are made in the market's timezone.
 MARKET_TZ = ZoneInfo(config['market_timezone'])
 

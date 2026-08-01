@@ -37,7 +37,7 @@ export function AccountSelect({ accounts, value, onChange, hidden }: Props) {
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-1 w-[280px] rounded-[12px] border border-border bg-surface p-1 shadow-lg">
+        <div className="absolute left-0 top-full z-50 mt-1 w-[calc(100vw-3rem)] max-w-[280px] rounded-[12px] border border-border bg-surface p-1 shadow-lg">
           <button
             onClick={() => { onChange('ALL'); setOpen(false) }}
             className={`flex w-full items-center justify-between rounded-[9px] px-3 py-2 text-left ${

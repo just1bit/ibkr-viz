@@ -24,7 +24,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const fetchUser = useCallback(async () => {
     try {
-      const res = await fetch('/auth/me')
+      const res = await fetch('/auth/me', { cache: 'no-store' })
       if (!res.ok) { setAuthState({ status: 'unauthenticated' }); return }
       setAuthState({ status: 'authenticated', user: await res.json() })
     } catch {

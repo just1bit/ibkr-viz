@@ -41,7 +41,11 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
   const [hoverRow, setHoverRow] = useState<string | null>(null)
 
   const showAccount = portfolio.account_id === 'ALL'
-  const totalValue = portfolio.holdings.reduce((s, h) => s + h.market_value, 0)
+  // `total_value` is the gross value of OpenPositions. NAV is the IBKR
+  // EquitySummary total and includes cash plus accruals, including negative
+  // cash on margin accounts.
+  const investedValue = portfolio.summary.total_value
+  const nav = portfolio.summary.net_liquidation
 
   // ── Sorted holdings ──
   const rows = useMemo(() => {
@@ -59,7 +63,8 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
   }, [portfolio, sortKey, asc])
 
   const cashHolding = portfolio.holdings.find((h) => h.ticker === 'CASH')
-  const cashValue = cashHolding ? cashHolding.market_value : 0
+  const cashValue = cashHolding ? Math.max(cashHolding.market_value, 0) : 0
+  const allocationTotal = investedValue + cashValue
 
   // Current hovered holding (for donut center details)
   const hoveredHolding = useMemo(() => {
@@ -99,9 +104,9 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
   // ── Rebalance state ──
   const curPcts = useMemo(() => {
     const m: Record<string, number> = {}
-    for (const h of rows) m[displaySymbol(h)] = totalValue > 0 ? (h.market_value / totalValue) * 100 : 0
+    for (const h of rows) m[displaySymbol(h)] = investedValue > 0 ? (h.market_value / investedValue) * 100 : 0
     return m
-  }, [rows, totalValue])
+  }, [rows, investedValue])
 
   const defaults = useMemo(() => {
     const d: Record<string, string> = {}
@@ -174,7 +179,7 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
                   {hoveredHolding.full_name}
                 </span>
                 <span className="mt-1.5 text-[20px] font-bold leading-none tabular-nums text-text">
-                  {((hoveredHolding.market_value / (totalValue + cashValue)) * 100).toFixed(2)}%
+                  {((hoveredHolding.market_value / (allocationTotal || 1)) * 100).toFixed(2)}%
                 </span>
                 <span className={`mt-2 text-[12px] leading-none text-faint ${hidden ? 'masked' : ''}`}>
                   {fmtUSDFull(hoveredHolding.market_value, hidden)}
@@ -186,9 +191,12 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
               </>
             ) : (
               <>
-                <span className="text-[14px] uppercase tracking-wide text-faint">Total</span>
+                <span className="text-[14px] uppercase tracking-wide text-faint">NAV</span>
                 <span className={`mt-1 text-[20px] font-bold tabular-nums text-text ${hidden ? 'masked' : ''}`}>
-                  {fmtUSD(totalValue + cashValue, hidden)}
+                  {fmtUSD(nav, hidden)}
+                </span>
+                <span className={`mt-2 text-[11px] leading-none text-faint ${hidden ? 'masked' : ''}`}>
+                  Invested {fmtUSD(investedValue, hidden)}
                 </span>
               </>
             )}
@@ -196,7 +204,7 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
         </div>
 
         {/* Table */}
-        <div className="min-w-0 flex-1 overflow-visible">
+        <div className="min-w-0 flex-1 overflow-x-auto scroll-thin">
           <table className="w-full min-w-[680px] border-collapse text-[12px]">
             <thead>
               <tr className="text-[10px] font-medium uppercase tracking-wide text-faint">
@@ -216,8 +224,8 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
                 const cur = curPcts[sym] ?? 0
                 const tgt = tgtPct(sym)
                 const driftPp = cur - tgt
-                const trade = (totalValue * tgt) / 100 - h.market_value
-                const action = Math.abs(trade) < totalValue * 0.0005 ? null
+                const trade = (investedValue * tgt) / 100 - h.market_value
+                const action = Math.abs(trade) < investedValue * 0.0005 ? null
                   : trade < 0 ? { label: 'Sell', amt: -trade, tone: 'text-neg' }
                   : { label: 'Buy', amt: trade, tone: 'text-pos' }
                 const active = hoverRow === sym
