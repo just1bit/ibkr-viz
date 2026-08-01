@@ -59,6 +59,11 @@ def _num(el, attr) -> float:
     return float(el.get(attr) or 0)
 
 
+def _optional_num(el, attr):
+    raw = el.get(attr)
+    return float(raw) if raw not in (None, '') else None
+
+
 def parse_flex_xml(xml_text: str) -> Dict:
     """Parse a real IBKR Flex statement XML.
 
@@ -70,12 +75,14 @@ def parse_flex_xml(xml_text: str) -> Dict:
             'account_id', 'alias', 'account_type',
             'syep', 'drip', 'tax_lot_method', 'date_opened',
             'net_liquidation', 'cash_balance', 'stock_value', 'options_value',
-            'dividend_accruals', 'interest_accruals', 'day_pnl',
+            'dividend_accruals', 'interest_accruals', 'previous_net_liquidation',
+            'day_pnl',
             'holdings': [{
                 'conid', 'ticker', 'full_name', 'asset_class', 'side',
                 'quantity', 'market_value', 'mark_price',
                 'cost_price', 'cost_basis', 'unrealized_pnl',
                 'day_pnl', 'prev_close_price', 'prev_close_quantity',
+                'xml_percent_of_nav',
                 'multiplier', 'strike', 'expiry', 'put_call',
                 'underlying_symbol', 'listing_exchange', 'currency'
             }]
@@ -94,8 +101,12 @@ def parse_flex_xml(xml_text: str) -> Dict:
 
         # --- NAV components: latest EquitySummary row (NAV basis:
         #     cash + positions + accruals == total) ---
-        es_rows = list(stmt.find('EquitySummaryInBase'))
-        latest_es = max(es_rows, key=lambda e: e.get('reportDate', ''))
+        es_rows = sorted(
+            list(stmt.find('EquitySummaryInBase')),
+            key=lambda e: e.get('reportDate', ''),
+        )
+        latest_es = es_rows[-1]
+        previous_es = es_rows[-2] if len(es_rows) > 1 else None
 
         # --- Day P&L from MTM performance: the blank-symbol row is the
         #     account total IBKR reports directly; named rows are per
@@ -126,6 +137,7 @@ def parse_flex_xml(xml_text: str) -> Dict:
                 'quantity': _num(pos, 'position'),
                 'market_value': _num(pos, 'positionValue'),
                 'mark_price': _num(pos, 'markPrice'),
+                'xml_percent_of_nav': _optional_num(pos, 'percentOfNAV'),
                 'cost_price': _num(pos, 'costBasisPrice'),
                 'cost_basis': _num(pos, 'costBasisMoney'),
                 'unrealized_pnl': _num(pos, 'fifoPnlUnrealized'),
@@ -155,6 +167,10 @@ def parse_flex_xml(xml_text: str) -> Dict:
             'options_value': round(_num(latest_es, 'options'), 2),
             'dividend_accruals': round(_num(latest_es, 'dividendAccruals'), 2),
             'interest_accruals': round(_num(latest_es, 'interestAccruals'), 2),
+            'previous_net_liquidation': (
+                round(_num(previous_es, 'total'), 2)
+                if previous_es is not None else None
+            ),
             'day_pnl': day_pnl,
             'holdings': holdings,
         })

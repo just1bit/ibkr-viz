@@ -104,9 +104,16 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
   // ── Rebalance state ──
   const curPcts = useMemo(() => {
     const m: Record<string, number> = {}
-    for (const h of rows) m[displaySymbol(h)] = investedValue > 0 ? (h.market_value / investedValue) * 100 : 0
+    for (const h of rows) {
+      // IBKR supplies this value for an individual account.  ALL has no
+      // consolidated percentOfNAV row, so its weight remains calculated from
+      // the merged holdings.
+      m[displaySymbol(h)] = showAccount
+        ? (investedValue > 0 ? (h.market_value / investedValue) * 100 : 0)
+        : h.xml_percent_of_nav!
+    }
     return m
-  }, [rows, investedValue])
+  }, [rows, investedValue, showAccount])
 
   const defaults = useMemo(() => {
     const d: Record<string, string> = {}

@@ -228,15 +228,17 @@ def _expected_report_date(now_mkt):
 # ---------------------------------------------------------------------------
 def store_report(conn, user_id, data, report_date):
     """Insert one parsed Flex report into the database (no commit)."""
+    storage.ensure_xml_native_columns(conn)
     c = conn.cursor()
     for acc in data['accounts']:
         aid = acc['account_id']
 
         c.execute('''INSERT INTO accounts
             (user_id, account_id, net_liquidation, cash_balance, stock_value,
-             options_value, dividend_accruals, interest_accruals, day_pnl,
+             options_value, dividend_accruals, interest_accruals,
+             previous_net_liquidation, day_pnl,
              alias, account_type, syep, drip, tax_lot_method, date_opened)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, account_id) DO UPDATE SET
              net_liquidation=excluded.net_liquidation,
              cash_balance=excluded.cash_balance,
@@ -244,6 +246,7 @@ def store_report(conn, user_id, data, report_date):
              options_value=excluded.options_value,
              dividend_accruals=excluded.dividend_accruals,
              interest_accruals=excluded.interest_accruals,
+             previous_net_liquidation=excluded.previous_net_liquidation,
              day_pnl=excluded.day_pnl,
              alias=excluded.alias,
              account_type=excluded.account_type,
@@ -254,6 +257,7 @@ def store_report(conn, user_id, data, report_date):
             (user_id, aid, acc['net_liquidation'], acc['cash_balance'],
              acc['stock_value'], acc['options_value'],
              acc['dividend_accruals'], acc['interest_accruals'],
+             acc.get('previous_net_liquidation'),
              acc['day_pnl'], acc['alias'], acc['account_type'],
              acc['syep'], acc['drip'], acc['tax_lot_method'],
              acc['date_opened']))
@@ -263,20 +267,33 @@ def store_report(conn, user_id, data, report_date):
                 (user_id, date, account_id, conid, ticker, full_name,
                  asset_class, side, quantity, market_value, mark_price,
                  cost_price, cost_basis, unrealized_pnl, day_pnl,
-                 prev_close_price, prev_close_quantity, multiplier,
+                 prev_close_price, prev_close_quantity, xml_percent_of_nav,
+                 multiplier,
                  strike, expiry, put_call, underlying_symbol,
                  listing_exchange, currency)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                 (user_id, report_date, aid, h['conid'], h['ticker'],
                  h['full_name'], h['asset_class'], h['side'],
                  h['quantity'], h['market_value'], h['mark_price'],
                  h['cost_price'], h['cost_basis'], h['unrealized_pnl'],
                  h['day_pnl'], h['prev_close_price'],
-                 h['prev_close_quantity'], h['multiplier'],
+                 h['prev_close_quantity'], h.get('xml_percent_of_nav'),
+                 h['multiplier'],
                  h['strike'], h['expiry'], h['put_call'],
                  h['underlying_symbol'], h['listing_exchange'],
                  h['currency']))
+
+    xml_native_complete = bool(data['accounts']) and all(
+        acc.get('previous_net_liquidation') is not None
+        and all(h.get('xml_percent_of_nav') is not None
+                for h in acc['holdings'])
+        for acc in data['accounts']
+    )
+    if xml_native_complete:
+        c.execute('''UPDATE users SET xml_native_data_version = ?
+                     WHERE user_id = ?''',
+                  (XML_NATIVE_DATA_VERSION, user_id))
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +301,7 @@ def store_report(conn, user_id, data, report_date):
 # ---------------------------------------------------------------------------
 FLEX_CACHE_DIR = os.path.join(BASE_DIR, 'flex_cache')
 os.makedirs(FLEX_CACHE_DIR, exist_ok=True)
+XML_NATIVE_DATA_VERSION = 1
 
 
 def _cache_path(user_id):
@@ -302,6 +320,107 @@ def _write_cache(user_id, xml_text):
     path = _cache_path(user_id)
     with open(path, 'w', encoding='utf-8') as f:
         f.write(xml_text)
+
+
+def migrate_xml_native_data(conn, user_id, report_date):
+    """Backfill the active snapshot from its archived raw Flex XML.
+
+    This is deliberately a data migration, not a calculation fallback.  It
+    verifies the user, report date, account IDs, and position keys before
+    committing any XML-native values.  A user is marked migrated only after
+    every active account and position row has been updated successfully.
+
+    Returns an error string when migration cannot be completed; callers must
+    not serve a mixed legacy/native snapshot in that case.
+    """
+    c = conn.cursor()
+    c.execute('''SELECT xml_native_data_version
+                 FROM users WHERE user_id = ?''', (user_id,))
+    user = c.fetchone()
+    if not user:
+        return 'User not found'
+    if (user['xml_native_data_version'] or 0) >= XML_NATIVE_DATA_VERSION:
+        return None
+
+    c.execute('''SELECT account_id FROM accounts
+                 WHERE user_id = ?''', (user_id,))
+    database_accounts = {row['account_id'] for row in c.fetchall()}
+    if not database_accounts:
+        return 'No account rows found for migration'
+
+    # S3 is authoritative. The local file is only a same-date recovery path
+    # for environments where the archive is temporarily unavailable.
+    xml_text = s3_store.get_raw_xml(user_id, report_date)
+    if not xml_text:
+        xml_text = _read_cache(user_id)
+    if not xml_text:
+        return f'Raw Flex XML unavailable for {report_date}'
+
+    try:
+        data = flex_parser.parse_flex_xml(xml_text)
+    except Exception as exc:
+        return f'Raw Flex XML migration parse failed: {exc}'
+    if data.get('date') != report_date:
+        return f'Raw Flex XML date mismatch: expected {report_date}, got {data.get("date")}'
+
+    xml_accounts = {account['account_id']: account for account in data['accounts']}
+    if set(xml_accounts) != database_accounts:
+        return 'Raw Flex XML account set does not match the active database snapshot'
+
+    try:
+        for account_id, account in xml_accounts.items():
+            previous_nav = account.get('previous_net_liquidation')
+            if previous_nav is None:
+                raise ValueError(f'Previous NAV missing for account {account_id}')
+
+            c.execute('''UPDATE accounts
+                         SET previous_net_liquidation = ?
+                         WHERE user_id = ? AND account_id = ?''',
+                      (previous_nav, user_id, account_id))
+            if c.rowcount != 1:
+                raise ValueError(f'Account row missing for {account_id}')
+
+            for holding in account['holdings']:
+                weight = holding.get('xml_percent_of_nav')
+                if weight is None:
+                    raise ValueError(
+                        f'XML percentOfNAV missing for {account_id}/{holding["ticker"]}'
+                    )
+                c.execute('''UPDATE positions
+                             SET xml_percent_of_nav = ?
+                             WHERE user_id = ? AND date = ?
+                               AND account_id = ? AND ticker = ?''',
+                          (weight, user_id, report_date, account_id,
+                           holding['ticker']))
+                if c.rowcount != 1:
+                    raise ValueError(
+                        f'Position row missing for {account_id}/{holding["ticker"]}'
+                    )
+
+        c.execute('''SELECT COUNT(*) AS missing
+                     FROM accounts
+                     WHERE user_id = ?
+                       AND previous_net_liquidation IS NULL''', (user_id,))
+        if c.fetchone()['missing']:
+            raise ValueError('Some account rows remain unmigrated')
+
+        c.execute('''SELECT COUNT(*) AS missing
+                     FROM positions
+                     WHERE user_id = ? AND date = ?
+                       AND xml_percent_of_nav IS NULL''',
+                  (user_id, report_date))
+        if c.fetchone()['missing']:
+            raise ValueError('Some position rows remain unmigrated')
+
+        c.execute('''UPDATE users SET xml_native_data_version = ?
+                     WHERE user_id = ?''',
+                  (XML_NATIVE_DATA_VERSION, user_id))
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        return f'XML-native data migration failed: {exc}'
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -547,17 +666,21 @@ def setup_scheduler():
 def account_summary(cursor, user_id, account_id):
     """NAV components / P&L totals for one account, or all merged."""
     cols = ('net_liquidation', 'cash_balance', 'stock_value', 'options_value',
-            'dividend_accruals', 'interest_accruals', 'day_pnl')
+            'dividend_accruals', 'interest_accruals',
+            'previous_net_liquidation', 'day_pnl')
     select = ', '.join(f'SUM({c}) AS {c}' for c in cols)
     if account_id == 'ALL':
         cursor.execute(f'SELECT {select} FROM accounts WHERE user_id = ?',
                        (user_id,))
     else:
         cursor.execute(f'''SELECT {select} FROM accounts
-                           WHERE user_id = ? AND account_id = ?''',
+                       WHERE user_id = ? AND account_id = ?''',
                        (user_id, account_id))
     row = cursor.fetchone()
-    return {c: round(row[c], 2) if row and row[c] is not None else 0 for c in cols}
+    return {
+        c: round(row[c], 2) if row and row[c] is not None else 0
+        for c in cols
+    }
 
 
 def get_account_info(cursor, user_id):
@@ -583,6 +706,7 @@ def build_holding(row):
         'day_pnl': row['day_pnl'],
         'prev_close_price': row['prev_close_price'],
         'prev_close_quantity': row['prev_close_quantity'],
+        'xml_percent_of_nav': row['xml_percent_of_nav'],
         'multiplier': row['multiplier'],
         'strike': row['strike'],
         'expiry': row['expiry'],
@@ -601,6 +725,7 @@ def cash_holding(amount, account_id):
         'mark_price': None, 'cost_price': None, 'cost_basis': None,
         'unrealized_pnl': 0, 'day_pnl': 0,
         'prev_close_price': None, 'prev_close_quantity': None,
+        'xml_percent_of_nav': None,
         'multiplier': None, 'strike': None, 'expiry': '', 'put_call': '',
         'underlying_symbol': '', 'listing_exchange': '', 'currency': 'USD',
         'account_id': account_id,
@@ -615,6 +740,20 @@ def group_summary(holdings, field):
         {'name': name, 'value': round(value, 2)}
         for name, value in sorted(sums.items(), key=lambda kv: kv[1], reverse=True)
     ]
+
+
+def _securities_value_from_xml(summary, holdings):
+    """Return gross securities value, preferring XML equity components.
+
+    EquitySummary exposes stock and option values directly.  Those cover all
+    asset classes currently represented by the UI.  Keep the position sum as
+    a compatibility path for a future Flex report containing an asset class
+    whose EquitySummary component is not yet stored by the parser.
+    """
+    supported = {'STOCK', 'ETF', 'OPTION'}
+    if holdings and all(h['asset_class'] in supported for h in holdings):
+        return round(summary['stock_value'] + summary['options_value'], 2)
+    return sum(h['market_value'] for h in holdings)
 
 
 # ---------------------------------------------------------------------------
@@ -886,6 +1025,7 @@ def get_portfolio():
     user_id = g.user_id
     account_id = request.args.get('account_id', 'ALL')
     conn = get_db_g()
+    storage.ensure_xml_native_columns(conn)
     c = conn.cursor()
 
     c.execute('SELECT MAX(date) AS max_date FROM positions WHERE user_id = ?',
@@ -893,6 +1033,17 @@ def get_portfolio():
     latest_date = c.fetchone()['max_date']
     if not latest_date:
         return jsonify({'error': 'No data'}), 404
+
+    migration_error = migrate_xml_native_data(conn, user_id, latest_date)
+    if migration_error:
+        app.logger.warning(
+            'XML-native data migration pending for user %s: %s',
+            user_id, migration_error,
+        )
+        return jsonify({
+            'error': migration_error,
+            'code': 'XML_NATIVE_MIGRATION_REQUIRED',
+        }), 503
 
     if account_id == 'ALL':
         c.execute('''SELECT * FROM positions
@@ -914,7 +1065,7 @@ def get_portfolio():
     info = get_account_info(c, user_id)
 
     holdings = [build_holding(r) for r in rows]
-    securities_value = sum(h['market_value'] for h in holdings)
+    securities_value = _securities_value_from_xml(summary, holdings)
 
     cash_value = round(max(summary['cash_balance'], 0), 2)
     if cash_value > 0:
@@ -931,6 +1082,7 @@ def get_portfolio():
             'total_value': round(securities_value, 2),
             'net_liquidation': summary['net_liquidation'],
             'total_cash': summary['cash_balance'],
+            'previous_net_liquidation': summary['previous_net_liquidation'],
             'total_day_pnl': summary['day_pnl'],
         },
         'equity': {

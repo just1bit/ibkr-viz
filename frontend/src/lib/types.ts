@@ -26,6 +26,8 @@ export interface Holding {
   day_pnl: number
   prev_close_price: number | null
   prev_close_quantity: number | null
+  /** IBKR OpenPosition.percentOfNAV; available for single-account views. */
+  xml_percent_of_nav: number | null
   multiplier: number | null
   strike: number | null
   expiry: string
@@ -49,6 +51,8 @@ export interface PortfolioSummary {
   total_value: number
   net_liquidation: number
   total_cash: number
+  /** Direct previous-day EquitySummary total; migration requires this for the dashboard snapshot. */
+  previous_net_liquidation: number | null
   total_day_pnl: number
 }
 

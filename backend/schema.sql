@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS users (
     last_login       TEXT NOT NULL,
     last_refresh     TEXT,
     last_fetch_at    DOUBLE PRECISION,
-    last_manual_at   DOUBLE PRECISION
+    last_manual_at   DOUBLE PRECISION,
+    xml_native_data_version INTEGER NOT NULL DEFAULT 0
 );
 
 -- ---------------------------------------------------------------------------
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     options_value     DOUBLE PRECISION,
     dividend_accruals DOUBLE PRECISION,
     interest_accruals DOUBLE PRECISION,
+    previous_net_liquidation DOUBLE PRECISION,
     day_pnl           DOUBLE PRECISION,
     PRIMARY KEY (user_id, account_id)
 );
@@ -78,6 +80,7 @@ CREATE TABLE IF NOT EXISTS positions (
     day_pnl            DOUBLE PRECISION,
     prev_close_price   DOUBLE PRECISION,
     prev_close_quantity DOUBLE PRECISION,
+    xml_percent_of_nav DOUBLE PRECISION,
     multiplier         DOUBLE PRECISION,
     strike             DOUBLE PRECISION,
     expiry             TEXT,

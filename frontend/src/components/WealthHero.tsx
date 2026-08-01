@@ -9,7 +9,8 @@ interface Props {
 export function WealthHero({ portfolio, hidden }: Props) {
   const s = portfolio.summary
   const nav = s.net_liquidation
-  const dayRate = nav ? (s.total_day_pnl / (nav - s.total_day_pnl)) * 100 : 0
+  const previousNav = s.previous_net_liquidation
+  const dayRate = previousNav ? (s.total_day_pnl / previousNav) * 100 : 0
   const pnlTone = s.total_day_pnl >= 0 ? 'text-pos' : 'text-neg'
 
   return (
