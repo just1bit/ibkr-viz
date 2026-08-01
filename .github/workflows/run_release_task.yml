@@ -1,0 +1,59 @@
+name: Run release task
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_directory:
+        description: Directory name under release_tasks (for example, xml-native-values)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: production-release-task
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: Run ${{ inputs.task_directory }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME || 'ibkr-viz' }}
+
+    steps:
+      - name: Check out selected release
+        uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_6F7789AF204A4932819F542AAC163C4F }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_06C46F231B97443ABD60A2E5957EED3B }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_98DE88682BE5425ABB9A64601196B9B3 }}
+
+      - name: Resolve task entrypoint
+        env:
+          TASK_DIRECTORY: ${{ inputs.task_directory }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$TASK_DIRECTORY" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "Invalid task directory name"
+            exit 1
+          fi
+
+          task_path="$GITHUB_WORKSPACE/release_tasks/$TASK_DIRECTORY"
+          if [[ ! -f "$task_path/run.sh" ]]; then
+            echo "Task entrypoint not found: release_tasks/$TASK_DIRECTORY/run.sh"
+            exit 1
+          fi
+
+          echo "TASK_PATH=$task_path" >> "$GITHUB_ENV"
+
+      - name: Execute task
+        shell: bash
+        run: bash "$TASK_PATH/run.sh"

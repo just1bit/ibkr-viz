@@ -19,8 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
     last_login       TEXT NOT NULL,
     last_refresh     TEXT,
     last_fetch_at    DOUBLE PRECISION,
-    last_manual_at   DOUBLE PRECISION,
-    xml_native_data_version INTEGER NOT NULL DEFAULT 0
+    last_manual_at   DOUBLE PRECISION
 );
 
 -- ---------------------------------------------------------------------------

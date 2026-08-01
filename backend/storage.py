@@ -1,43 +1,12 @@
 """Storage: PostgreSQL connection pool, user/session/targets CRUD, S3."""
 
 from datetime import datetime, timedelta, timezone
-from threading import Lock
 
 # ---------------------------------------------------------------------------
 # Database connection (PostgreSQL only)
 # ---------------------------------------------------------------------------
 
 _pg_pool = None
-_xml_native_schema_ready = False
-_xml_native_schema_lock = Lock()
-
-
-def ensure_xml_native_columns(conn):
-    """Add nullable columns introduced for XML-native values.
-
-    ``schema.sql`` contains these columns for new databases.  This small,
-    idempotent migration keeps existing deployments compatible when the
-    application is upgraded before the schema file is reapplied.
-    """
-    global _xml_native_schema_ready
-    if _xml_native_schema_ready:
-        return
-
-    with _xml_native_schema_lock:
-        if _xml_native_schema_ready:
-            return
-        c = conn.cursor()
-        c.execute('''ALTER TABLE accounts
-                     ADD COLUMN IF NOT EXISTS previous_net_liquidation
-                     DOUBLE PRECISION''')
-        c.execute('''ALTER TABLE positions
-                     ADD COLUMN IF NOT EXISTS xml_percent_of_nav
-                     DOUBLE PRECISION''')
-        c.execute('''ALTER TABLE users
-                     ADD COLUMN IF NOT EXISTS xml_native_data_version
-                     INTEGER NOT NULL DEFAULT 0''')
-        conn.commit()
-        _xml_native_schema_ready = True
 
 
 def connect(config):
