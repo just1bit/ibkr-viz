@@ -43,7 +43,7 @@ export function WealthHero({ portfolio, hidden }: Props) {
       </div>
 
       <div className="mt-auto grid grid-cols-2 gap-2 border-t border-border pt-3">
-        <Mini label="Invested" value={s.total_value} hidden={hidden} />
+        <Mini label="Market Value" value={s.total_value} hidden={hidden} />
         <Mini label="Cash" value={s.total_cash} hidden={hidden} tone={s.total_cash < 0 ? 'neg' : 'neutral'} />
       </div>
     </div>

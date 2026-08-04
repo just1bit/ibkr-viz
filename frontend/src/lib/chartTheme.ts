@@ -30,6 +30,13 @@ export interface ChartTheme {
   splitLine: string
 }
 
+// Shared hover treatment for chart marks. Keeping this in one place prevents
+// visually similar charts from drifting apart as their options evolve.
+export const chartEmphasisItemStyle = {
+  shadowBlur: 14,
+  shadowColor: 'rgba(0,0,0,0.25)',
+} as const
+
 // Curated categorical palette — works on both light and dark backgrounds.
 const PALETTE_DARK = [
   '#2dd4bf', '#60a5fa', '#f0a868', '#a78bfa', '#34d399',
