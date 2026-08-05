@@ -1,0 +1,117 @@
+name: Pull request checks
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pull-request-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  frontend-build:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+  backend-check:
+    name: Backend check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Compile Python sources
+        run: python -m compileall -q backend release_tasks
+
+      - name: Validate release task shell scripts
+        run: find release_tasks -type f -name '*.sh' -exec bash -n {} +
+
+  wait-for-copilot-review:
+    name: Wait for Copilot review
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Wait for Copilot to review the current commit
+        uses: actions/github-script@v9
+        with:
+          retries: 3
+          script: |
+            const pullNumber = context.payload.pull_request.number;
+            const headSha = context.payload.pull_request.head.sha;
+            const reviewer = "copilot-pull-request-reviewer[bot]";
+            const deadline = Date.now() + 20 * 60 * 1000;
+
+            core.info(`Waiting for ${reviewer} to review ${headSha}`);
+
+            while (Date.now() < deadline) {
+              const reviews = await github.paginate(
+                github.rest.pulls.listReviews,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pullNumber,
+                  per_page: 100,
+                },
+              );
+
+              const completedReview = reviews.find((review) =>
+                review.user?.login === reviewer &&
+                review.commit_id === headSha &&
+                review.state === "COMMENTED"
+              );
+
+              if (completedReview) {
+                core.info(
+                  `Copilot review ${completedReview.id} completed for ${headSha}`,
+                );
+                return;
+              }
+
+              core.info("Copilot review is not complete yet; checking again in 20 seconds.");
+              await new Promise((resolve) => setTimeout(resolve, 20_000));
+            }
+
+            core.setFailed(
+              `Copilot did not complete a review for ${headSha} within 20 minutes. ` +
+              "Confirm that automatic Copilot review and Review new pushes are enabled, " +
+              "then re-run this job.",
+            );
