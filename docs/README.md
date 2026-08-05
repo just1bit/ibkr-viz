@@ -1,107 +1,96 @@
 # IBKR Portfolio Viz
 
-A multi-tenant portfolio allocation & rebalancing tool for Interactive Brokers accounts. Google OAuth login, per-user IBKR Flex credentials, strict data isolation.
+A private, multi-user dashboard for Interactive Brokers Flex reports. Users sign in with Google, connect their own Flex Query, inspect portfolio performance and maintain per-account target allocations.
 
-## Quick Start
+## Quick start
+
+Prerequisites: Python 3.12+, Node.js 20+, PostgreSQL and Google OAuth web-app credentials.
 
 ```bash
-# Install dependencies
-python3 -m venv venv && source venv/bin/activate
-pip install -r backend/requirements.txt
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 
-# Initialize database (first time only)
 psql -d <dbname> -f backend/schema.sql
-
-# Configure
 cp config.example.yaml config.local.yaml
-# Fill in PostgreSQL URL, Google OAuth credentials, encryption keys
+# Fill in the required values described below.
 
-# Build frontend
-cd frontend && npm install && npm run build && cd ..
+cd frontend
+npm ci
+npm run build
+cd ..
 
-# Run
 python backend/app.py
 ```
 
-After startup, users sign in with Google and enter their IBKR Flex credentials on the Setup page.
+Open `http://localhost:5123`, sign in, then enter an IBKR Flex Web Service token and Query ID. The configured Flex Query must include the sections and attributes consumed by [`backend/flex_parser.py`](../backend/flex_parser.py).
+
+For frontend development, run `npm run dev` from `frontend/`; Vite serves port 5173 and proxies `/api` and `/auth` to Flask on port 5123.
 
 ## Configuration
 
-All settings in `config.local.yaml` (git-ignored). Required keys:
+Copy [`config.example.yaml`](../config.example.yaml) to the git-ignored `config.local.yaml`. Every key can also be supplied as a case-insensitive environment variable; environment values override the YAML file.
+
+Required settings:
 
 | Key | Purpose |
-|-----|---------|
-| `postgres_url` | PostgreSQL connection string |
-| `google_client_id` / `google_client_secret` | OAuth 2.0 credentials from Google Cloud Console |
-| `base_url` | Public URL of the app, used for OAuth redirect |
-| `secret_key` | Flask session signing key |
-| `flex_encryption_key` | Fernet key for encrypting user Flex tokens at rest |
+| --- | --- |
+| `postgres_url` | PostgreSQL connection URL |
+| `google_client_id`, `google_client_secret` | Google OAuth 2.0 web-app credentials |
+| `base_url` | Public application origin used to build `/auth/callback` |
+| `secret_key` | Flask cookie-signing secret |
+| `flex_encryption_key` | Fernet key used to encrypt Flex tokens at rest |
 
-Flex credentials (token + query ID) are entered by each user through the UI and stored encrypted in the database.
+S3-compatible storage is optional. Set `s3_bucket` and, when needed, its endpoint, region and credentials to archive raw XML. The remaining refresh, server and admin settings are documented in the example file.
 
-## Architecture
+## Data flow
 
+```text
+setup test / hourly scheduler
+            |
+            v
+       IBKR Flex ----> latest local XML
+                           |
+                           v
+                    parser -> PostgreSQL -> Flask API -> React SPA
+                           |
+                           +----> S3 raw archive (best effort)
 ```
-IBKR Flex Web Service
-        │  flex_client.py
-        ▼
-   Raw XML ──→ S3 archive ──→ Local cache
-        │  flex_parser.py
-        ▼
-   PostgreSQL ──→ Flask API ──→ React SPA
-```
 
-**Data flow:** IBKR is called exactly once per fetch. XML is saved locally, archived to S3, parsed into PostgreSQL. Subsequent reads use DB → S3 → local cache fallback chain without calling IBKR.
+`fetch_and_store` is the only path that calls IBKR. It runs during credential testing and scheduled refreshes, skips users whose expected report is already stored, and applies retry backoff. The dashboard Refresh action does not call IBKR: it checks PostgreSQL, then the expected report in S3, then the user's latest local XML cache.
 
-**Scheduler:** Background job refreshes all users hourly, based on market timezone (America/New_York by default).
+IBKR report readiness and expected business dates use `market_timezone` and `report_ready_hour`. The scheduler checks eligible users hourly and processes them concurrently.
 
-**One-time release tasks:** Run the `Run release task` GitHub Actions
-workflow manually and enter a directory name under `release_tasks/`. The
-workflow validates the name and executes that directory's `run.sh`. Each task
-owns its dependencies and behavior, so new one-time requirements do not need
-changes to the workflow. The runner supplies the repository's scoped Azure
-identity; each task obtains only the settings it needs. No application table
-or custom execution history is created; rerunning a task executes it again.
-
-For the XML-native data release, run `xml-native-values` before deploying the
-business-code change. It adds the two required columns, downloads every stored
-snapshot's exact raw XML from S3, validates all keys and values, and commits the
-backfill only after the complete source set passes validation.
-
-**Tables (all scoped by `user_id`):**
+## Data model
 
 | Table | Purpose |
-|-------|---------|
-| `users` | Identity, encrypted Flex credentials, refresh state |
-| `sessions` | Server-side session records |
-| `accounts` | Per-account NAV breakdown + metadata |
-| `positions` | Daily position snapshots |
-| `targets` | Per-user per-account target allocations |
-| `fetch_log` | Refresh audit trail |
+| --- | --- |
+| `users` | Google identity, encrypted Flex configuration and refresh state |
+| `sessions` | Server-side session validation records |
+| `accounts` | Latest per-account NAV components and account metadata |
+| `positions` | User/account/report-date position snapshots |
+| `targets` | Per-user, per-account ticker target weights |
+| `fetch_log` | Refresh success and error history |
+
+All application queries scope portfolio data by `user_id`. Private API and auth responses are marked `no-store`.
+
+## Deployment and maintenance
+
+Pushes to `main` build the React app and deploy the backend, frontend bundle and Python requirements to the configured Azure Web App. Pull requests run the frontend build, Python compilation, shell syntax checks and the configured Copilot review gate.
+
+## Stack
+
+React 18, TypeScript, Tailwind CSS 4, ECharts 5, Flask, APScheduler, gunicorn, PostgreSQL, optional S3-compatible object storage and Fernet encryption.
 
 ## Features
 
-- Google OAuth login with server-side session validation
-- Per-user IBKR Flex credentials, encrypted at rest
-- Donut chart: holdings & asset class views with linked legend interaction
-- Day P&L attribution bar chart per position
-- Sortable positions table with cost basis, option details, day-change indicators
-- Cash included as a position in all views
-- Rebalance table: current vs. target weight, drift, buy/sell suggestions; targets saved per account
-- NAV composition: equity, options, cash, dividend & interest accruals
-- Multi-account support with aliases, account type, SYEP/DRIP badges
-- Light/dark theme, responsive layout, one-click hide amounts
+- Private multi-account dashboard with Google OAuth, encrypted per-user Flex credentials and strict data isolation.
+- Consolidated or per-account NAV, cash, daily P&L and linked ticker holdings views, with responsive themes and amount masking.
+- Securities-only target allocation, drift and buy/sell estimates, backed by scheduled refresh and DB/S3/local recovery. Cash is excluded from allocation and rebalancing.
 
-## Tech Stack
+## Product behavior
 
-| Layer | Stack |
-|-------|-------|
-| Auth | Google OAuth 2.0 + Flask signed cookies |
-| Frontend | React 18 + TypeScript + Tailwind CSS v4 + ECharts 5 |
-| Backend | Python Flask + APScheduler + gunicorn |
-| Database | PostgreSQL |
-| Object storage | S3-compatible (optional) |
-| Encryption | Fernet (cryptography) |
+See [`PRD_IBKR_Viz.md`](PRD_IBKR_Viz.md) for the implementation-aligned product specification and current limitations.
 
 ## License
 

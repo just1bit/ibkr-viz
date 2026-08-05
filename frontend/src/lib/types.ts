@@ -41,7 +41,7 @@ export interface Holding {
 export interface AllocationSlice {
   name: string
   value: number
-  /** Assigned on the client (see AllocationCard); absent in the API response. */
+  /** Optional client-only chart color; absent from the API response. */
   color?: string
   full_name?: string
   day_pnl?: number
@@ -51,7 +51,7 @@ export interface PortfolioSummary {
   total_value: number
   net_liquidation: number
   total_cash: number
-  /** Direct previous-day EquitySummary total; migration requires this for the dashboard snapshot. */
+  /** Previous report-day NAV from EquitySummaryInBase. */
   previous_net_liquidation: number | null
   total_day_pnl: number
 }
@@ -78,24 +78,23 @@ export interface Portfolio {
   ticker_summary: AllocationSlice[]
 }
 
-/** Map of ticker → target weight (percent of the portfolio). */
+/** Ticker target weights as percentages of invested securities value. */
 export type Targets = Record<string, number>
 
 export interface Status {
   last_refresh: string
-  /** flex_status from the API (replaces old 'mode' field) */
   flex_status: 'not_configured' | 'healthy' | 'error' | 'needs_attention'
   refresh_cooldown_remaining: number
 }
 
 export type DonutView = 'ticker' | 'asset_class'
 
-/** Current authenticated user profile from GET /auth/me */
 export interface UserProfile {
   user_id: string
   email: string
   name: string
   flex_query_id: string
+  flex_token_masked: string
   has_flex_query: boolean
   flex_status: 'not_configured' | 'healthy' | 'error' | 'needs_attention'
   is_admin: boolean
@@ -103,14 +102,12 @@ export interface UserProfile {
   last_login: string
 }
 
-/** Result from POST /api/setup/test-flex */
 export interface FlexTestResult {
   status: string
   accounts: Array<{ account_id: string; alias: string; account_type: string }>
   report_date: string
 }
 
-/** Result from POST /api/setup/configure */
 export interface ConfigureResult {
   status: string
   flex_status: string

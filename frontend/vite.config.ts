@@ -2,8 +2,8 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-// Flask backend serves the JSON API on :5123. During dev we proxy /api there;
-// the production build is emitted to ./dist and served directly by Flask.
+// Flask serves /api and /auth on :5123. Vite proxies both during development;
+// Flask serves the production bundle emitted to ./dist.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
