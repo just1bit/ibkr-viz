@@ -88,6 +88,8 @@
 }
 
 @layer utilities {
+  .safe-top { padding-top: env(safe-area-inset-top); }
+  .safe-bottom { padding-bottom: max(1.25rem, env(safe-area-inset-bottom)); }
   /* Masked monetary values when privacy mode is on */
   .masked {
     filter: blur(7px);

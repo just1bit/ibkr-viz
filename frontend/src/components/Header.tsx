@@ -82,7 +82,7 @@ export function Header({
   })()
 
   return (
-    <header className="sticky top-0 z-40 border-b border-border bg-bg/80 backdrop-blur-xl">
+    <header className="safe-top sticky top-0 z-40 border-b border-border bg-bg/80 backdrop-blur-xl">
       <div className="mx-auto flex min-h-16 w-full max-w-7xl flex-wrap items-center gap-3 px-4 py-3 sm:h-16 sm:flex-nowrap sm:px-6 sm:py-0">
         <div className="flex items-center gap-2.5">
           <div className="flex h-8 w-8 items-center justify-center rounded-[10px] bg-accent/12 text-accent">
@@ -113,7 +113,7 @@ export function Header({
             onClick={refresh}
             disabled={busy || cooldown > 0}
             title="Refresh data"
-            className="flex h-9 items-center gap-1.5 rounded-[10px] border border-border bg-surface px-3 text-[13px] font-medium text-text transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex h-11 w-11 items-center justify-center gap-1.5 rounded-[10px] border border-border bg-surface px-3 text-[13px] font-medium text-text transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50 sm:h-9 sm:w-auto sm:justify-start"
           >
             <RefreshIcon className={`h-4 w-4 ${busy ? 'animate-spin-slow' : ''}`} />
             <span className="hidden sm:inline tabular-nums">
@@ -149,7 +149,7 @@ function IconButton({
     <button
       onClick={onClick}
       title={title}
-      className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-border bg-surface text-muted transition-colors hover:bg-surface-2 hover:text-text"
+      className="flex h-11 w-11 items-center justify-center rounded-[10px] border border-border bg-surface text-muted transition-colors hover:bg-surface-2 hover:text-text sm:h-9 sm:w-9"
     >
       {children}
     </button>

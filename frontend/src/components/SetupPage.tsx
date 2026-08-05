@@ -72,7 +72,7 @@ export function SetupPage({ onDone }: { onDone?: () => void }) {
                 value={token}
                 onChange={(e) => { setToken(e.target.value); setError('') }}
                 placeholder="Paste your IBKR Flex token"
-                className="h-10 w-full rounded-[10px] border border-border bg-surface px-3 pr-10 text-[13px] text-text placeholder:text-faint focus:border-accent focus:outline-none"
+                className="h-11 w-full rounded-[10px] border border-border bg-surface px-3 pr-10 text-[16px] text-text placeholder:text-faint focus:border-accent focus:outline-none sm:h-10 sm:text-[13px]"
               />
               <button
                 type="button"
@@ -93,7 +93,7 @@ export function SetupPage({ onDone }: { onDone?: () => void }) {
               value={queryId}
               onChange={(e) => { setQueryId(e.target.value); setError('') }}
               placeholder="e.g. 1510531"
-              className="h-10 w-full rounded-[10px] border border-border bg-surface px-3 text-[13px] text-text placeholder:text-faint focus:border-accent focus:outline-none"
+              className="h-11 w-full rounded-[10px] border border-border bg-surface px-3 text-[16px] text-text placeholder:text-faint focus:border-accent focus:outline-none sm:h-10 sm:text-[13px]"
             />
           </div>
 
@@ -101,7 +101,7 @@ export function SetupPage({ onDone }: { onDone?: () => void }) {
             <button
               onClick={handleTest}
               disabled={step === 'testing' || step === 'saving'}
-              className="flex h-10 items-center gap-2 rounded-[10px] border border-border bg-surface px-4 text-[13px] font-medium text-text transition-colors hover:bg-surface-2 disabled:opacity-50"
+              className="flex h-11 items-center gap-2 rounded-[10px] border border-border bg-surface px-4 text-[13px] font-medium text-text transition-colors hover:bg-surface-2 disabled:opacity-50 sm:h-10"
             >
               {step === 'testing' ? (
                 <>
@@ -116,7 +116,7 @@ export function SetupPage({ onDone }: { onDone?: () => void }) {
             <button
               onClick={handleSave}
               disabled={step !== 'test_done'}
-              className="flex h-10 items-center gap-2 rounded-[10px] bg-accent px-4 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+              className="flex h-11 items-center gap-2 rounded-[10px] bg-accent px-4 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50 sm:h-10"
             >
               {step === 'saving' ? (
                 <>

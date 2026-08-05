@@ -25,7 +25,7 @@ export function UserMenu({ user, onLogout, onSettings }: Props) {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-surface text-[13px] font-semibold text-text transition-colors hover:bg-surface-2"
+        className="flex h-11 w-11 items-center justify-center rounded-full border border-border bg-surface text-[13px] font-semibold text-text transition-colors hover:bg-surface-2 sm:h-9 sm:w-9"
         title={user.email}
       >
         {initial}
@@ -41,14 +41,14 @@ export function UserMenu({ user, onLogout, onSettings }: Props) {
           {onSettings && (
             <button
               onClick={() => { onSettings(); setOpen(false) }}
-              className="flex w-full items-center rounded-[9px] px-3 py-2 text-left text-[13px] text-text transition-colors hover:bg-surface-2"
+              className="flex min-h-11 w-full items-center rounded-[9px] px-3 py-2 text-left text-[13px] text-text transition-colors hover:bg-surface-2"
             >
               IBKR Settings
             </button>
           )}
           <button
             onClick={() => { onLogout(); setOpen(false) }}
-            className="flex w-full items-center rounded-[9px] px-3 py-2 text-left text-[13px] text-text transition-colors hover:bg-surface-2"
+            className="flex min-h-11 w-full items-center rounded-[9px] px-3 py-2 text-left text-[13px] text-text transition-colors hover:bg-surface-2"
           >
             Sign out
           </button>

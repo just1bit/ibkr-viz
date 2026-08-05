@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import type * as echarts from 'echarts/core'
 import type { Holding, Portfolio } from '../lib/types'
 import { fmtUSD, fmtUSDFull } from '../lib/format'
-import { getChartTheme } from '../lib/chartTheme'
+import { chartEmphasisItemStyle, getChartTheme } from '../lib/chartTheme'
 import { useEChart } from '../hooks/useEChart'
 import { displaySymbol } from '../lib/symbols'
 
@@ -70,8 +70,6 @@ function barOption(rows: Row[], hidden: boolean): echarts.EChartsCoreOption {
   return {
     tooltip: {
       trigger: 'item',
-      confine: true,
-      position: tooltipPosition,
       backgroundColor: t.tooltipBg,
       borderColor: t.tooltipBorder,
       borderWidth: 1,
@@ -85,7 +83,7 @@ function barOption(rows: Row[], hidden: boolean): echarts.EChartsCoreOption {
           : `${r.pnl >= 0 ? '+' : ''}${fmtUSDFull(r.pnl)}`
         const px =
           r.prevClose && r.close
-            ? `<div style="color:${t.faint};font-size:11px;margin-top:2px;font-variant-numeric:tabular-nums">${r.prevClose} → ${r.close} (${(((r.close - r.prevClose) / r.prevClose) * 100).toFixed(2)}%)</div>`
+            ? `<div style="color:${t.faint};font-size:11px;margin-top:2px;font-variant-numeric:tabular-nums">${fmtUSDFull(r.prevClose)} → ${fmtUSDFull(r.close)} (${(((r.close - r.prevClose) / r.prevClose) * 100).toFixed(2)}%)</div>`
             : ''
         return `<div style="font-weight:600">${r.name}</div><div style="color:${t.faint};font-size:10px">${r.fullName}</div><div style="margin-top:4px;font-variant-numeric:tabular-nums;color:${r.pnl >= 0 ? t.pos : t.neg}">${pnl}</div>${px}`
       },
@@ -110,26 +108,31 @@ function barOption(rows: Row[], hidden: boolean): echarts.EChartsCoreOption {
       {
         type: 'bar',
         barWidth: 16,
-        data: rows.map((r) => ({
-          value: r.pnl,
-          itemStyle: {
-            color: r.pnl >= 0 ? t.pos : t.neg,
-            opacity: 0.88,
-            borderRadius: 4,
-          },
-          emphasis: {
+        data: rows.map((r) => {
+          const color = r.pnl >= 0 ? t.pos : t.neg
+          return {
+            value: r.pnl,
             itemStyle: {
-              color: t.accent,
-              opacity: 1,
-              shadowBlur: 8,
-              shadowColor: 'rgba(0,0,0,0.2)',
+              color,
+              borderRadius: 4,
             },
-          },
-          label: {
-            position: r.pnl < -200 ? 'insideLeft' : r.pnl >= 0 ? 'right' : 'left',
-            color: r.pnl < -200 ? t.surface : t.muted,
-          },
-        })),
+            emphasis: {
+              // Bar emphasis does not reliably inherit a per-data-item fill
+              // the way pie emphasis does. Preserve it explicitly or the bar
+              // can flash and then render transparent while hovered.
+              itemStyle: {
+                color,
+                borderColor: color,
+                borderWidth: 2,
+                ...chartEmphasisItemStyle,
+              },
+            },
+            label: {
+              position: 'right',
+              color: t.muted,
+            },
+          }
+        }),
         label: {
           show: true,
           fontSize: 11,
@@ -138,31 +141,9 @@ function barOption(rows: Row[], hidden: boolean): echarts.EChartsCoreOption {
           formatter: (p: { value: number }) =>
             hidden ? '••••' : (p.value >= 0 ? '+' : '') + fmtUSD(p.value),
         },
-        emphasis: {
-          focus: 'self',
-          label: { fontWeight: 600 },
-        },
       },
     ],
     animationDuration: 600,
     animationEasing: 'cubicOut',
   } as echarts.EChartsCoreOption
-}
-
-function tooltipPosition(
-  point: [number, number],
-  _params: unknown,
-  _el: unknown,
-  _rect: unknown,
-  size: { contentSize: [number, number]; viewSize: [number, number] },
-): [number, number] {
-  const [tipWidth, tipHeight] = size.contentSize
-  const [viewWidth, viewHeight] = size.viewSize
-  const left = Math.max(6, viewWidth - tipWidth - 6)
-  // Keep the popup on the opposite side of the hovered row so its opaque
-  // background cannot cover the bar being inspected.
-  const top = point[1] > tipHeight + 12
-    ? 6
-    : Math.max(6, viewHeight - tipHeight - 6)
-  return [left, top]
 }
