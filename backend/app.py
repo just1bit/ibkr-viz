@@ -418,10 +418,10 @@ def refresh_user_data(user_id):
 
 
 def fetch_and_store(user_id):
-    """Call IBKR Flex, cache locally, archive to S3, parse, store to DB.
+    """Call IBKR Flex, cache locally, parse/store, then archive to S3.
 
     This is the ONLY function that calls IBKR. Used by:
-      - test-flex (user-initiated, via background thread)
+      - test-flex (user-initiated and synchronous)
       - scheduled_refresh (hourly automated)
 
     Returns (report_date, is_new, error, accounts_list).
@@ -628,12 +628,11 @@ def group_summary(holdings, field):
 
 
 def _securities_value_from_xml(summary, holdings):
-    """Return gross securities value, preferring XML equity components.
+    """Return securities value from stored XML components when complete.
 
-    EquitySummary exposes stock and option values directly.  Those cover all
-    asset classes currently represented by the UI.  Keep the position sum as
-    a compatibility path for a future Flex report containing an asset class
-    whose EquitySummary component is not yet stored by the parser.
+    Stock, ETF and option portfolios are covered by the stored EquitySummary
+    fields. For any other asset class, sum positions because its corresponding
+    EquitySummary component is not stored.
     """
     supported = {'STOCK', 'ETF', 'OPTION'}
     if holdings and all(h['asset_class'] in supported for h in holdings):
@@ -742,11 +741,30 @@ def auth_me():
     user = storage.get_user_by_id(conn, user_id)
     if not user:
         return jsonify({'error': 'User not found'}), 404
+
+    flex_token_masked = ''
+    if user['flex_token_enc']:
+        try:
+            flex_token = storage.decrypt_flex_token(config, user['flex_token_enc'])
+            if len(flex_token) > 8:
+                flex_token_masked = (
+                    f'{flex_token[:4]}'
+                    f'{"*" * (len(flex_token) - 8)}'
+                    f'{flex_token[-4:]}'
+                )
+            else:
+                flex_token_masked = '*' * len(flex_token)
+        except Exception:
+            app.logger.warning(
+                'Unable to create Flex token hint for user %s', user_id
+            )
+
     return jsonify({
         'user_id': user['user_id'],
         'email': user['email'],
         'name': user['name'],
         'flex_query_id': user['flex_query_id'],
+        'flex_token_masked': flex_token_masked,
         'has_flex_query': bool(user['flex_token_enc'] and user['flex_query_id']),
         'flex_status': user['flex_status'],
         'is_admin': bool(user['is_admin']),
@@ -772,12 +790,7 @@ def auth_logout():
 @app.route('/api/setup/test-flex', methods=['POST'])
 @login_required
 def setup_test_flex():
-    """Test Flex credentials, then async full pipeline (cache → S3 → parse → DB).
-
-    IBKR is called exactly once here. On success, the full data pipeline runs
-    in a background thread so the user gets a quick response. On failure,
-    a clear error message is returned.
-    """
+    """Save and test Flex credentials through the synchronous fetch pipeline."""
     body = request.get_json(silent=True) or {}
     flex_token = (body.get('token') or '').strip()
     flex_query_id = (body.get('query_id') or '').strip()
@@ -789,8 +802,7 @@ def setup_test_flex():
     conn = get_db_g()
     storage.set_user_flex_credentials(conn, config, g.user_id, flex_token, flex_query_id)
 
-    # Call IBKR + full pipeline synchronously (IBKR fetch is the slow part,
-    # parse + DB + S3 is fast enough to do inline)
+    # Run the complete IBKR → local cache → parser/DB → S3 pipeline inline.
     report_date, is_new, error, accounts = fetch_and_store(g.user_id)
 
     if error:
@@ -817,7 +829,7 @@ def setup_configure():
     conn = get_db_g()
     storage.set_user_flex_credentials(conn, config, g.user_id, flex_token, flex_query_id)
 
-    # Check DB → local cache only (no IBKR call — test-flex already did it)
+    # Recover through DB → S3 → local cache; test-flex already called IBKR.
     report_date, is_new, error = refresh_user_data(g.user_id)
 
     user = storage.get_user_by_id(conn, g.user_id)
@@ -1094,7 +1106,7 @@ def admin_list_users():
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
-# Admin emails → set is_admin flag on next login
+# Promote configured existing users at process startup.
 admin_emails = config.get('admin_emails', [])
 if admin_emails:
     conn = get_db()

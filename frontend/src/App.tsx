@@ -32,7 +32,6 @@ function AppContent() {
     return <LoginPage />
   }
 
-  // Flex not configured → setup flow
   if (user && (!user.has_flex_query || showSettings)) {
     return <SetupPage onDone={() => setShowSettings(false)} />
   }

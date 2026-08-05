@@ -63,7 +63,7 @@ function allocationWeights(holdings: Holding[], total: number): Record<string, n
  * sector to its table row and vice versa.
  *
  * Columns: Holding | Value | Day P/L | Day% | Weight | Target | Drift | Action
- * Qty, price, full name appear in a row-hover tooltip.
+ * Hover details appear in the donut center and chart tooltip.
  */
 export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>('value')
@@ -82,7 +82,6 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
     [portfolio.holdings],
   )
 
-  // ── Sorted holdings ──
   const rows = useMemo(() => {
     const sorted = [...positions]
     const dir = asc ? 1 : -1
@@ -102,13 +101,11 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
     [positions],
   )
 
-  // Current hovered holding (for donut center details)
   const hoveredHolding = useMemo(() => {
     if (!hoverRow) return null
     return positions.find((h) => displaySymbol(h) === hoverRow) ?? null
   }, [hoverRow, positions])
 
-  // ── Donut slices ──
   const slices = useMemo(() => {
     return rows.map((h, i) => ({
       name: displaySymbol(h),
@@ -119,7 +116,6 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
     }))
   }, [rows])
 
-  // ── Donut chart ──
   const { elRef, chartRef } = useEChart(
     () => donutOption(slices, hidden),
     [slices, hidden],
@@ -133,7 +129,6 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
     if (name) chart.dispatchAction({ type: 'highlight', seriesIndex: 0, name })
   }
 
-  // ── Rebalance state ──
   // Rebalance weights are an allocation of invested securities, not a
   // percent of NAV. Keeping cash/margin outside this denominator makes the
   // target model stable for both cash and leveraged accounts.
@@ -212,7 +207,6 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
 
   return (
     <div className="overflow-visible rounded-[var(--radius-lg)] border border-border bg-surface shadow-[var(--shadow)]">
-      {/* ── Header ── */}
       <div className="grid grid-cols-1 gap-2 px-5 pt-5 sm:h-[46px] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start sm:gap-3 sm:px-6">
         <div className="flex items-baseline gap-3">
           <h2 className="text-[15px] font-semibold tracking-tight text-text">Holdings</h2>
@@ -242,9 +236,7 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
         </div>
       </div>
 
-      {/* ── Body: donut + table ── */}
       <div className="flex flex-col gap-5 p-4 sm:flex-row sm:p-5 sm:pb-6">
-        {/* Donut */}
         <div className="relative h-[320px] w-full shrink-0 self-start sm:w-[320px]">
           <div ref={elRef} className="absolute inset-0" />
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center px-4 text-center">
@@ -277,7 +269,6 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
           </div>
         </div>
 
-        {/* Table */}
         <div className="hidden min-w-0 flex-1 overflow-x-auto scroll-thin sm:block">
           <table className="w-full min-w-[780px] table-fixed border-collapse text-[12px]">
             <colgroup>
@@ -440,8 +431,6 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
   )
 }
 
-// ── Helpers ──
-
 function dayPct(h: Holding): number {
   if (!h.prev_close_price || !h.mark_price) return 0
   return ((h.mark_price - h.prev_close_price) / h.prev_close_price) * 100
@@ -532,8 +521,6 @@ function EditIcon() {
     </svg>
   )
 }
-
-// ── Donut chart option ──
 
 function donutOption(slices: { name: string; value: number; full_name?: string; day_pnl?: number; color: string }[], hidden: boolean): echarts.EChartsCoreOption {
   const t = getChartTheme()

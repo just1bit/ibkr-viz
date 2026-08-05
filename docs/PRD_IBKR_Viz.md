@@ -1,77 +1,79 @@
-# PRD — IBKR Portfolio Viz
+# Product specification — IBKR Portfolio Viz
 
-A lightweight web tool for IBKR investors to visualize position weights, monitor allocation drift, and plan rebalancing. Cash is treated as a position — every dollar of the portfolio is accounted for.
+## Purpose
+
+IBKR Portfolio Viz turns each user's latest Interactive Brokers Flex statement into a private portfolio dashboard. It focuses on daily portfolio visibility and ticker-level target allocation; it does not place orders or provide live brokerage data.
 
 ## Users
 
-- Individual IBKR investors managing equity/option portfolios
-- Those with target asset allocations who rebalance periodically
-- Multi-account holders who need consolidated or per-account views
+- Individual IBKR investors with stock, ETF, option or other Flex-reported positions.
+- Multi-account holders who need consolidated and per-account views.
+- Investors who maintain target weights and periodically rebalance securities.
 
-## Features
+## Implemented behavior
 
-### Data Pipeline
+### Identity and setup
 
-- Fetch from IBKR Flex Web Service on demand or via scheduled refresh
-- XML saved locally, archived to S3, parsed into PostgreSQL
-- Fallback chain: DB → S3 → local cache (IBKR called at most once per fetch cycle)
-- Hourly background scheduler, market-timezone-aware, with retry backoff
+- Google OAuth authenticates users; a signed cookie references a server-side session record.
+- Each user supplies a Flex Web Service token and Query ID. The token is encrypted with Fernet before storage.
+- Connection testing stores the credentials, invokes the fetch pipeline synchronously and returns the available report date and detected accounts.
+- Authentication and portfolio records are scoped by `user_id`; private API responses disable caching.
 
-### Accounts & Overview
+### Portfolio dashboard
 
-- Multi-account detection with aliases and metadata badges
-- KPI cards: net liquidation, day P&L, equity breakdown, cash with accruals
-- One-click hide amounts for privacy
+- Users can select all accounts or an individual account, with aliases, account type and net liquidation shown in the selector.
+- The summary displays report date, net liquidation, daily return/P&L, securities market value and cash balance.
+- A diverging bar chart attributes daily P&L to each non-cash position.
+- A ticker donut links hover state with desktop holdings rows; mobile uses a card list.
+- Holdings can be sorted by symbol, market value, daily P&L or daily percentage move. Option symbols are compacted for display.
+- Amount masking, responsive layout and light/dark themes are supported.
 
-### Positions & Allocation
+### Allocation and rebalancing
 
-- Donut chart: ticker and asset class views with hover-linked legend
-- Day P&L attribution bar chart per position
-- Sortable positions table with cost basis, option details, day-change tags
+- Allocation is ticker-level and uses positive invested securities value as its denominator.
+- Cash and margin balances remain in portfolio totals but do not participate in the holdings chart, allocation weights, targets or trade suggestions.
+- Displayed weights use largest-remainder rounding so the visible values total exactly 100.0%.
+- Targets are saved per user and selected account view. Saving is allowed only when every value is non-negative and the total is 100.0%.
+- Drift is current weight minus target weight, rounded to one decimal point. Suggested buy/sell amounts apply that drift to total invested securities value; no share quantities or orders are generated.
 
-### Rebalancing
+### Refresh and recovery
 
-- Side-by-side current vs. target weight, drift in percentage points, buy/sell suggestions
-- Targets persist per account to the server
-- Reset to current weights, save to keep
+- `fetch_and_store` is the only IBKR-calling path. Credential tests and the hourly scheduler use it.
+- A fetch is skipped when PostgreSQL already contains the expected report date; retry backoff prevents repeated IBKR attempts when a report is unavailable.
+- Successful raw XML is saved immediately to the user's latest local cache, parsed into PostgreSQL and archived to S3 on a best-effort basis.
+- The dashboard Refresh action is recovery-only: PostgreSQL → expected-date S3 object → latest local cache. It is rate-limited and never calls IBKR.
+- Expected report dates are calculated in the configured market timezone, respect `report_ready_hour`, and roll weekends back to Friday.
+- Repeated failures move a user through `error` to `needs_attention`; users needing attention are excluded from scheduled fetches until credentials are updated.
 
-### NAV & Income
+## Flex data contract
 
-- NAV composition: stock, options, cash, dividend/interest accruals
-- Income summary from CashReport with MTD/YTD toggle
+The parser expects one or more `FlexStatement` elements containing:
 
-### UX
+| Flex section | Stored or displayed data |
+| --- | --- |
+| `AccountInformation` | Alias, account type, SYEP/DRIP state, tax-lot method, open date |
+| `EquitySummaryInBase` | Current and previous NAV, stock/options values, cash and accruals |
+| `MTMPerformanceSummaryInBase` | Account and per-position daily P&L, previous close data |
+| `OpenPositions` | Position value, quantity, cost/P&L data, asset and option metadata |
 
-- Light/dark theme with system preference detection
-- Responsive layout
-- Google OAuth login with per-user data isolation
+The report date comes from each statement's `toDate`, not the network fetch time. Current dashboard totals use the latest stored position date and the latest account summary rows.
 
-## Data Architecture
+## Data and system architecture
 
+```text
+Google OAuth -> server-side session
+                         |
+IBKR Flex -> local XML -> parser -> PostgreSQL -> Flask JSON API -> React UI
+                  |                     |
+                  +-> S3 archive        +-> user/account-scoped targets
 ```
-IBKR Flex → Raw XML → Local cache → S3 archive
-                  ↓
-              Parser → PostgreSQL (user-scoped)
-                  ↓
-              Flask API → React SPA
-```
 
-**Six tables:** users, sessions, accounts (NAV + metadata), positions, targets, fetch_log. All scoped by `user_id`.
+The PostgreSQL schema contains six tables: `users`, `sessions`, `accounts`, `positions`, `targets` and `fetch_log`. The Flask process also runs the APScheduler hourly job and serves the production React bundle.
 
-## Tech Stack
+## Current limitations
 
-| Layer | Stack |
-|-------|-------|
-| Frontend | React + TypeScript + Tailwind CSS + ECharts |
-| Backend | Python Flask + APScheduler + gunicorn |
-| Database | PostgreSQL |
-| Storage | S3-compatible (optional) |
-| Auth | Google OAuth 2.0 + server-side sessions |
-
-## Roadmap
-
-- Position weight day-over-day change display
-- Rebalance export as order-ready share quantities
-- Target weight normalization
-- Multi-currency cash breakdown
-- Stock lending (SYEP) view
+- Data is statement-based and normally reflects the previous business day; it is not real time.
+- The UI formats monetary values as USD even though position currency is retained.
+- Allocation targets are ticker-level securities percentages only; cash targets, asset-class targets and order-ready quantities are not supported.
+- S3 archival is optional and best effort. Without S3, recovery is limited to PostgreSQL and the process-local latest XML files.
+- The application has an admin users endpoint but no admin UI.

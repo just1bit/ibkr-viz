@@ -68,7 +68,7 @@ export function Header({
         startCooldown(600)
       }
     } catch {
-      /* surfaced elsewhere */
+      /* keep the current dashboard state */
     } finally {
       setBusy(false)
     }

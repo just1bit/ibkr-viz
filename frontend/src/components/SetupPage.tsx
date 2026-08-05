@@ -6,7 +6,7 @@ type Step = 'input' | 'testing' | 'test_done' | 'saving' | 'saved'
 export function SetupPage({ onDone }: { onDone?: () => void }) {
   const { user, testFlex, configureFlex } = useAuth()
   const [token, setToken] = useState('')
-  const [queryId, setQueryId] = useState('')
+  const [queryId, setQueryId] = useState(user?.flex_query_id ?? '')
   const [showToken, setShowToken] = useState(false)
   const [step, setStep] = useState<Step>('input')
   const [testResult, setTestResult] = useState<{
@@ -62,16 +62,30 @@ export function SetupPage({ onDone }: { onDone?: () => void }) {
         </p>
 
         <div className="mt-7 space-y-4">
+          {user?.flex_token_masked && (
+            <div className="rounded-[10px] border border-border bg-surface-2/60 px-3 py-2.5">
+              <div className="text-[12px] text-muted">Saved Flex token</div>
+              <code className="mt-1 block font-mono text-[13px] tracking-wide text-text">
+                {user.flex_token_masked}
+              </code>
+              <div className="mt-1 text-[11px] text-faint">
+                The full token remains encrypted. Enter a new token below only to replace it.
+              </div>
+            </div>
+          )}
+
           <div>
             <label className="mb-1.5 block text-[13px] font-medium text-text">
-              Flex Web Service Token
+              {user?.flex_token_masked ? 'New Flex Web Service Token' : 'Flex Web Service Token'}
             </label>
             <div className="relative">
               <input
                 type={showToken ? 'text' : 'password'}
                 value={token}
                 onChange={(e) => { setToken(e.target.value); setError('') }}
-                placeholder="Paste your IBKR Flex token"
+                placeholder={user?.flex_token_masked
+                  ? 'Paste a new token to replace the saved token'
+                  : 'Paste your IBKR Flex token'}
                 className="h-11 w-full rounded-[10px] border border-border bg-surface px-3 pr-10 text-[16px] text-text placeholder:text-faint focus:border-accent focus:outline-none sm:h-10 sm:text-[13px]"
               />
               <button

@@ -42,7 +42,7 @@ refresh_cooldown: 600      # seconds between manual refresh clicks per user
 scheduler_max_workers: 8   # max concurrent users during hourly refresh
 
 # --- Admin (optional) ---------------------------------------------------------
-# Google account emails listed here get admin privileges on next login.
+# Existing users with these Google emails are promoted at application startup.
 admin_emails: []
 
 # --- Server -------------------------------------------------------------------

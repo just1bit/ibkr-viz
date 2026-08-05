@@ -1,9 +1,8 @@
 """IBKR Flex XML statement parser.
 
 Parses real IBKR Flex XML responses into structured dictionaries for database
-insertion. Every value is read directly from the XML — no fallbacks and no
-recomputation of figures the statement already provides. A missing section or
-attribute is a data problem in the Flex query, not something to paper over.
+insertion. Portfolio totals, prior NAV and position weights come from their
+native statement fields rather than being reconstructed from other values.
 
   FlexQueryResponse
     └── FlexStatement (one per account)
