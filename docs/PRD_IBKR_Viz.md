@@ -62,20 +62,39 @@ The report date comes from each statement's `toDate`, not the network fetch time
 
 ## Data and system architecture
 
-```text
-Google OAuth -> server-side session
-                         |
-IBKR Flex -> local XML -> parser -> PostgreSQL -> Flask JSON API -> React UI
-                  |                     |
-                  +-> S3 archive        +-> user/account-scoped targets
+```mermaid
+flowchart TD
+    USER["User"] --> UI["React dashboard"]
+    UI --> API["Flask API"]
+    OAUTH["Google OAuth"] --> API
+    API --> DB[("PostgreSQL")]
+
+    AUTO["Hourly scheduler"] --> REFRESH["Refresh pipeline"]
+    MANUAL["Manual refresh"] --> REFRESH
+    REFRESH --> DB
+    DB -- "target date missing" --> LOCAL[("Local cache<br/>latest XML")]
+    LOCAL -- "valid date" --> LOCALPARSE["Parse report"]
+    LOCALPARSE --> LOCALARCHIVE["Ensure canonical archive"]
+    LOCALARCHIVE --> DB
+    LOCAL -- "missing or stale" --> R2[("Canonical S3/R2<br/>user/report-date.xml")]
+    R2 -- "valid object" --> R2HIT["Restore local cache<br/>parse and store report"]
+    R2HIT --> DB
+    R2 -- "missing" --> GATE{"Automatic backoff allows request?<br/>Manual refresh bypasses backoff"}
+    GATE -- "yes" --> IBKR["IBKR Flex API"]
+    GATE -- "no" --> WAIT["Wait for next retry"]
+    IBKR --> SAVELOCAL["Save latest local XML"]
+    SAVELOCAL --> PARSER["Flex parser"]
+    PARSER --> ARCHIVE["Write canonical report-date object"]
+    ARCHIVE --> DB
+    DB --> API
 ```
 
-The PostgreSQL schema contains six tables: `users`, `sessions`, `accounts`, `positions`, `targets` and `fetch_log`. The Flask process also runs the APScheduler hourly job and serves the production React bundle.
+The refresh pipeline is shared by automatic and manual triggers. Its cache wall checks PostgreSQL, local XML and canonical S3/R2 in that order; IBKR is called only when none contains the expected report. The PostgreSQL schema contains six tables: `users`, `sessions`, `accounts`, `positions`, `targets` and `fetch_log`. The Flask process also runs the APScheduler hourly job and serves the production React bundle.
 
 ## Current limitations
 
 - Data is statement-based and normally reflects the previous business day; it is not real time.
 - The UI formats monetary values as USD even though position currency is retained.
 - Allocation targets are ticker-level securities percentages only; cash targets, asset-class targets and order-ready quantities are not supported.
-- S3 archival is optional and best effort. Without S3, recovery is limited to PostgreSQL and the process-local latest XML files.
+- S3 archival is optional and best effort. Without S3, recovery is limited to PostgreSQL and the configured latest-XML cache directory.
 - The application has an admin users endpoint but no admin UI.

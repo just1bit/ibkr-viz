@@ -43,36 +43,38 @@ Required settings:
 
 S3-compatible storage is optional. Set `s3_bucket` and, when needed, its endpoint, region and credentials to archive raw XML. The remaining refresh, server and admin settings are documented in the example file.
 
-## Data flow
+## System architecture and cache wall
 
-```text
-setup test / manual refresh / hourly scheduler
-                      |
-                      v
-          expected date already in PostgreSQL? ---- yes ----> serve it
-                      |
-                     no
-                      v
-          latest local XML satisfies date? ------- yes ----> archive/store
-                      |
-                     no
-                      v
-       canonical S3/R2 XML for expected date? ---- yes ----> restore/store
-                      |
-                     no
-                      v
-          retry backoff (automatic only) -> IBKR Flex -> local XML
-                                                    |
-                                                    v
-                                        parser -> dated S3/R2 XML
-                                                    |
-                                                    v
-                                               PostgreSQL
+```mermaid
+flowchart TD
+    USER["User"] --> UI["React dashboard"]
+    UI --> API["Flask API"]
+    OAUTH["Google OAuth"] --> API
+    API --> DB[("PostgreSQL")]
+
+    AUTO["Hourly scheduler"] --> REFRESH["Refresh pipeline"]
+    MANUAL["Manual refresh"] --> REFRESH
+    REFRESH --> DB
+    DB -- "target date missing" --> LOCAL[("Local cache<br/>latest XML")]
+    LOCAL -- "valid date" --> LOCALPARSE["Parse report"]
+    LOCALPARSE --> LOCALARCHIVE["Ensure canonical archive"]
+    LOCALARCHIVE --> DB
+    LOCAL -- "missing or stale" --> R2[("Canonical S3/R2<br/>user/report-date.xml")]
+    R2 -- "valid object" --> R2HIT["Restore local cache<br/>parse and store report"]
+    R2HIT --> DB
+    R2 -- "missing" --> GATE{"Automatic backoff allows request?<br/>Manual refresh bypasses backoff"}
+    GATE -- "yes" --> IBKR["IBKR Flex API"]
+    GATE -- "no" --> WAIT["Wait for next retry"]
+    IBKR --> SAVELOCAL["Save latest local XML"]
+    SAVELOCAL --> PARSER["Flex parser"]
+    PARSER --> ARCHIVE["Write canonical report-date object"]
+    ARCHIVE --> DB
+    DB --> API
 ```
 
 `fetch_and_store` is the only path that calls IBKR. It runs during credential testing, manual refreshes and scheduled refreshes. Every automatic or manual attempt validates the date inside the latest local XML and then checks the expected-date canonical object before contacting IBKR. Scheduled attempts use exponential retry backoff; an explicitly rate-limited manual refresh bypasses scheduler backoff, but does not bypass a valid cached report. Per-user in-process locking also prevents a manual and scheduled attempt from issuing duplicate requests concurrently.
 
-There is one canonical S3/R2 object per user and actual report date. The local XML provides the fast first cache layer; the canonical object provides durable recovery across restarts.
+The cache wall always checks PostgreSQL first, then the latest local XML, then the canonical object for the expected report date. Only a complete miss can reach IBKR. There is one canonical object per user and actual report date: local XML is the fast first recovery layer, while canonical storage provides durable recovery across restarts.
 
 Automatic retries use 1-hour, 2-hour, 4-hour and 8-hour backoff tiers. The fourth consecutive failure changes the user to `error` and removes them from automatic scheduling. A rate-limited manual refresh may still recover the account; a successful refresh resets the status to `healthy`.
 
