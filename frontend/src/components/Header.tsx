@@ -41,11 +41,17 @@ export function Header({
     text: string
   } | null>(null)
   const timer = useRef<number | null>(null)
+  const feedbackTimer = useRef<number | null>(null)
 
   useEffect(() => {
     if (initialCooldown > 0) startCooldown(initialCooldown)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialCooldown])
+
+  useEffect(() => () => {
+    if (timer.current) clearInterval(timer.current)
+    if (feedbackTimer.current) clearTimeout(feedbackTimer.current)
+  }, [])
 
   function startCooldown(seconds: number) {
     if (timer.current) clearInterval(timer.current)
@@ -61,24 +67,48 @@ export function Header({
     }, 1000)
   }
 
+  function showFeedback(
+    kind: 'success' | 'error' | 'info',
+    text: string,
+    dismissAfterMs?: number,
+  ) {
+    if (feedbackTimer.current) {
+      clearTimeout(feedbackTimer.current)
+      feedbackTimer.current = null
+    }
+    setFeedback({ kind, text })
+    if (dismissAfterMs) {
+      feedbackTimer.current = window.setTimeout(() => {
+        setFeedback(null)
+        feedbackTimer.current = null
+      }, dismissAfterMs)
+    }
+  }
+
+  function dismissFeedback() {
+    if (feedbackTimer.current) clearTimeout(feedbackTimer.current)
+    feedbackTimer.current = null
+    setFeedback(null)
+  }
+
   async function refresh() {
     setBusy(true)
-    setFeedback({ kind: 'info', text: 'Requesting the latest report from IBKR…' })
+    showFeedback('info', 'Requesting the latest report from IBKR…')
     try {
       const r = await api.triggerRefresh()
       if (r.rateLimited) {
         startCooldown(r.retryAfter)
-        setFeedback({ kind: 'info', text: r.message })
+        showFeedback('info', r.message, 5_000)
       } else if (r.failed) {
         if (r.retryAfter > 0) startCooldown(r.retryAfter)
-        setFeedback({ kind: 'error', text: r.message })
+        showFeedback('error', r.message, 10_000)
       } else {
         onRefreshed()
         startCooldown(600)
-        setFeedback({ kind: 'success', text: r.message })
+        showFeedback('success', r.message, 5_000)
       }
     } catch (err) {
-      setFeedback({ kind: 'error', text: (err as Error).message })
+      showFeedback('error', (err as Error).message, 10_000)
     } finally {
       setBusy(false)
     }
@@ -145,7 +175,8 @@ export function Header({
       {feedback && (
         <div
           role="status"
-          className={`border-t border-border px-4 py-2 text-center text-[12px] ${
+          aria-live="polite"
+          className={`relative border-t border-border px-10 py-2 text-center text-[12px] ${
             feedback.kind === 'error'
               ? 'bg-neg/10 text-neg'
               : feedback.kind === 'success'
@@ -154,6 +185,14 @@ export function Header({
           }`}
         >
           {feedback.text}
+          <button
+            type="button"
+            onClick={dismissFeedback}
+            aria-label="Dismiss notification"
+            className="absolute right-4 top-1/2 -translate-y-1/2 rounded px-1.5 py-0.5 text-[16px] leading-none opacity-60 transition-opacity hover:opacity-100"
+          >
+            ×
+          </button>
         </div>
       )}
     </header>
