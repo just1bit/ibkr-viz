@@ -39,9 +39,11 @@ IBKR Portfolio Viz turns each user's latest Interactive Brokers Flex statement i
 ### Refresh and recovery
 
 - `fetch_and_store` is the only IBKR-calling path. Credential tests, manual refreshes and the hourly scheduler use it.
-- A fetch is skipped when PostgreSQL already contains the expected report date; retry backoff prevents repeated IBKR attempts when a report is unavailable.
-- Successful raw XML is saved immediately to the user's latest local cache and an incoming S3/R2 object. After parsing, it is archived under the actual report date before the PostgreSQL transaction begins.
-- The dashboard Refresh action is rate-limited and performs an explicit IBKR fetch when the expected report is not already stored.
+- A fetch is skipped when PostgreSQL already contains the expected report date. Otherwise both automatic and manual attempts check the expected-date canonical S3/R2 object, then validate the report date inside the latest local XML, before reaching IBKR.
+- A valid cache hit is parsed and retried through the PostgreSQL transaction. A local hit is restored to canonical S3/R2; a canonical hit restores the local cache. This makes database retry failures recoverable without another IBKR request.
+- Successful IBKR XML is saved to the user's latest local cache. After parsing, one canonical object is archived under the actual report date before the PostgreSQL transaction begins. No unindexed `incoming/` duplicate is written.
+- Retry backoff prevents repeated automatic IBKR attempts when a report is unavailable. The dashboard Refresh action is rate-limited and may bypass that time-based backoff, but it never bypasses a valid cached report.
+- Per-user refresh serialization prevents simultaneous scheduler and dashboard actions in the same web process from issuing duplicate IBKR queries.
 - Expected report dates are calculated in the configured market timezone, respect `report_ready_hour`, and roll weekends back to Friday.
 - Repeated transient failures move a user to `error`. Only known credential or query errors move a user to `needs_attention`; an explicit manual credential test can recover the state.
 

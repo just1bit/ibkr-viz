@@ -316,25 +316,12 @@ class S3Store:
     def _key(self, user_id, date_str):
         return f'{self.prefix}{user_id}/{date_str}.xml'
 
-    def _incoming_key(self, user_id):
-        import uuid
-        timestamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-        return f'{self.prefix}{user_id}/incoming/{timestamp}-{uuid.uuid4().hex}.xml'
-
     def _put_xml(self, key, xml_text):
         self.client.put_object(
             Bucket=self.bucket, Key=key,
             Body=xml_text.encode('utf-8'),
             ContentType='application/xml',
         )
-
-    def save_incoming_xml(self, user_id, xml_text):
-        """Durably preserve a response before parsing or database work."""
-        if not self.enabled:
-            return None
-        key = self._incoming_key(user_id)
-        self._put_xml(key, xml_text)
-        return key
 
     def save_raw_xml(self, user_id, date_str, xml_text):
         if not self.enabled:

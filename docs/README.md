@@ -49,18 +49,30 @@ S3-compatible storage is optional. Set `s3_bucket` and, when needed, its endpoin
 setup test / manual refresh / hourly scheduler
                       |
                       v
-                 IBKR Flex
+          expected date already in PostgreSQL? ---- yes ----> serve it
                       |
-                      +----> durable incoming S3/R2 XML
-                      |
+                     no
                       v
-                parser ----> dated S3/R2 XML
+       canonical S3/R2 XML for expected date? ---- yes ----> parse/store
                       |
+                     no
                       v
-                PostgreSQL -> Flask API -> React SPA
+          latest local XML satisfies date? ------- yes ----> archive/store
+                      |
+                     no
+                      v
+          retry backoff (automatic only) -> IBKR Flex -> local XML
+                                                    |
+                                                    v
+                                        parser -> dated S3/R2 XML
+                                                    |
+                                                    v
+                                               PostgreSQL
 ```
 
-`fetch_and_store` is the only path that calls IBKR. It runs during credential testing, manual refreshes and scheduled refreshes. Scheduled attempts use retry backoff; an explicitly rate-limited manual refresh bypasses scheduler backoff. Cache recovery remains available for configuration and recovery paths.
+`fetch_and_store` is the only path that calls IBKR. It runs during credential testing, manual refreshes and scheduled refreshes. Every automatic or manual attempt checks the expected-date canonical object and then the date inside the latest local XML before contacting IBKR. Scheduled attempts use retry backoff; an explicitly rate-limited manual refresh bypasses scheduler backoff, but does not bypass a valid cached report. Per-user in-process locking also prevents a manual and scheduled attempt from issuing duplicate requests concurrently.
+
+There is one canonical S3/R2 object per user and actual report date. The previous unindexed `incoming/` copy is intentionally not written: the local XML plus canonical object provide retry recovery without doubling successful object writes.
 
 IBKR report readiness and expected business dates use `market_timezone` and `report_ready_hour`. The scheduler checks eligible users hourly and processes them concurrently. Production App Service deployments must enable Always On while the scheduler runs inside the web process.
 

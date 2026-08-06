@@ -8,6 +8,7 @@ import os
 import time
 import uuid
 import secrets
+import threading
 from collections import defaultdict
 from datetime import datetime, timedelta
 from functools import wraps
@@ -297,6 +298,17 @@ def _write_cache(user_id, xml_text):
         f.write(xml_text)
 
 
+def _accounts_from_data(data):
+    return [
+        {
+            'account_id': account['account_id'],
+            'alias': account['alias'],
+            'account_type': account['account_type'],
+        }
+        for account in data['accounts']
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Per-user data refresh
 # ---------------------------------------------------------------------------
@@ -356,8 +368,74 @@ def _store_parsed_data(user_id, data, report_date):
     return None
 
 
+def _ingest_cached_xml(user_id, expected, xml_text, source):
+    """Parse and store a cache candidate when it satisfies this refresh.
+
+    Returns a fetch_and_store-compatible result, or None when the cache is
+    stale/invalid and the caller should try the next layer.
+    """
+    try:
+        data = flex_parser.parse_flex_xml(xml_text)
+    except Exception as e:
+        logger.warning(
+            'Ignoring invalid %s Flex cache for user %s: %s',
+            source, user_id, e,
+        )
+        return None
+
+    report_date = data['date']
+    if report_date < expected:
+        logger.info(
+            'Ignoring stale %s Flex cache for user %s: %s < %s',
+            source, user_id, report_date, expected,
+        )
+        return None
+
+    accounts = _accounts_from_data(data)
+
+    # Keep both reusable layers populated before database work. If the DB
+    # transaction fails, a later automatic/manual attempt can retry locally
+    # without asking IBKR to regenerate the report.
+    if source == 'canonical R2':
+        try:
+            _write_cache(user_id, xml_text)
+        except Exception:
+            logger.exception('Unable to update local Flex cache for user %s', user_id)
+    else:
+        try:
+            s3_store.save_raw_xml(user_id, report_date, xml_text)
+        except Exception:
+            logger.exception('Unable to archive cached Flex XML for user %s', user_id)
+
+    err = _store_parsed_data(user_id, data, report_date)
+    if err:
+        return None, False, err, accounts
+    return report_date, True, None, accounts
+
+
+def _recover_cached_report(user_id, expected):
+    """Try exact-date canonical R2, then the user's latest local XML."""
+    xml_text = s3_store.get_raw_xml(user_id, expected)
+    if xml_text:
+        result = _ingest_cached_xml(
+            user_id, expected, xml_text, 'canonical R2'
+        )
+        if result:
+            return result
+
+    xml_text = _read_cache(user_id)
+    if xml_text:
+        result = _ingest_cached_xml(
+            user_id, expected, xml_text, 'local'
+        )
+        if result:
+            return result
+
+    return None
+
+
 def refresh_user_data(user_id):
-    """Check DB → S3 → local cache. NO IBKR call.
+    """Check DB → canonical R2 → local cache. NO IBKR call.
 
     Used by configure and trigger-refresh. Returns (report_date, is_new, error).
     """
@@ -381,43 +459,33 @@ def refresh_user_data(user_id):
     finally:
         return_db(conn)
 
-    # ---- DB missing → try S3 ----
-    xml_text = s3_store.get_raw_xml(user_id, expected)
-    if xml_text:
-        _write_cache(user_id, xml_text)
-        try:
-            data = flex_parser.parse_flex_xml(xml_text)
-        except Exception as e:
-            return None, False, f'S3 recovery parse failed: {e}'
-        report_date = data['date']
-        err = _store_parsed_data(user_id, data, report_date)
-        if err:
-            return None, False, err
-        return report_date, True, None
-
-    # ---- S3 missing → try local cache ----
-    xml_text = _read_cache(user_id)
-    if xml_text:
-        try:
-            data = flex_parser.parse_flex_xml(xml_text)
-        except Exception as e:
-            return None, False, f'Local cache parse failed: {e}'
-
-        report_date = data['date']
-        err = _store_parsed_data(user_id, data, report_date)
-        if err:
-            return None, False, err
-        # Re-upload to S3 (best-effort)
-        try:
-            s3_store.save_raw_xml(user_id, report_date, xml_text)
-        except Exception:
-            pass
-        return report_date, True, None
+    result = _recover_cached_report(user_id, expected)
+    if result:
+        report_date, is_new, error, _accounts = result
+        return report_date, is_new, error
 
     return None, False, 'No data available'
 
 
+_refresh_locks = {}
+_refresh_locks_guard = threading.Lock()
+
+
+def _refresh_lock(user_id):
+    with _refresh_locks_guard:
+        return _refresh_locks.setdefault(user_id, threading.Lock())
+
+
 def fetch_and_store(user_id, *, force=False):
+    """Run one serialized refresh for a user.
+
+    ``force`` bypasses scheduler backoff, but never bypasses a valid cache.
+    """
+    with _refresh_lock(user_id):
+        return _fetch_and_store_unlocked(user_id, force=force)
+
+
+def _fetch_and_store_unlocked(user_id, *, force=False):
     """Call IBKR Flex, archive/cache XML, parse it, then store it.
 
     This is the ONLY function that calls IBKR. Used by:
@@ -450,11 +518,22 @@ def fetch_and_store(user_id, *, force=False):
             accounts = [{'account_id': r['account_id'], 'alias': r['alias'],
                          'account_type': r['account_type']} for r in c.fetchall()]
             return latest_stored, False, None, accounts
-
         last_attempt = user['last_fetch_at'] or 0
-        if not force and time.time() - last_attempt < config['fetch_retry_backoff']:
-            return latest_stored, False, None, None
+    finally:
+        return_db(conn)
 
+    # Cache work can open its own DB transaction, so release the lookup
+    # connection first. This also keeps the scheduler's connection usage
+    # bounded when several users refresh concurrently.
+    cached_result = _recover_cached_report(user_id, expected)
+    if cached_result:
+        return cached_result
+
+    if not force and time.time() - last_attempt < config['fetch_retry_backoff']:
+        return latest_stored, False, None, None
+
+    conn = get_db()
+    try:
         storage.set_user_fetch_at(conn, user_id, time.time())
     finally:
         return_db(conn)
@@ -482,11 +561,6 @@ def fetch_and_store(user_id, *, force=False):
         return None, False, f'IBKR fetch failed: {e}', None
 
     try:
-        s3_store.save_incoming_xml(user_id, xml_text)
-    except Exception:
-        logger.exception('Unable to archive incoming Flex XML for user %s', user_id)
-
-    try:
         data = flex_parser.parse_flex_xml(xml_text)
     except Exception as e:
         elapsed_ms = int((time.time() - t0) * 1000)
@@ -494,8 +568,7 @@ def fetch_and_store(user_id, *, force=False):
         return None, False, f'Parse failed: {e}', None
 
     report_date = data['date']
-    accounts = [{'account_id': a['account_id'], 'alias': a['alias'],
-                 'account_type': a['account_type']} for a in data['accounts']]
+    accounts = _accounts_from_data(data)
 
     # Archive the canonical, actual report date before database work so a DB
     # failure can be recovered without asking IBKR to regenerate the report.
