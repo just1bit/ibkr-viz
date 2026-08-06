@@ -60,6 +60,9 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q backend release_tasks
 
+      - name: Run backend tests
+        run: python -m unittest discover -s backend/tests -v
+
       - name: Validate release task shell scripts
         run: find release_tasks -type f -name '*.sh' -exec bash -n {} +
 

@@ -23,7 +23,49 @@ FLEX_STATEMENT_URL = "https://ndcdyn.interactivebrokers.com/Universal/servlet/Fl
 
 
 class FlexClientError(Exception):
-    pass
+    """A structured IBKR Flex failure."""
+
+    CREDENTIAL_ERROR_CODES = {
+        '1010',  # legacy query
+        '1011',  # service account inactive
+        '1012',  # token expired
+        '1013',  # IP restriction
+        '1014',  # invalid query
+        '1015',  # invalid token
+        '1016',  # invalid account
+    }
+    RETRYABLE_ERROR_CODES = {
+        '1001', '1003', '1004', '1005', '1006', '1007', '1008', '1009',
+        '1017', '1018', '1019', '1021',
+    }
+
+    def __init__(self, message, *, error_code=None, status=None, stage=None):
+        super().__init__(message)
+        self.error_code = str(error_code) if error_code else None
+        self.status = status
+        self.stage = stage
+
+    @property
+    def needs_attention(self):
+        return self.error_code in self.CREDENTIAL_ERROR_CODES
+
+    @property
+    def retryable(self):
+        return self.error_code is None or self.error_code in self.RETRYABLE_ERROR_CODES
+
+
+def _response_error(root, stage):
+    status = root.findtext('.//Status')
+    if status not in ('Error', 'Fail', 'Warn'):
+        return None
+    error_code = root.findtext('.//ErrorCode', '')
+    error_msg = root.findtext('.//ErrorMessage', 'Unknown error')
+    return FlexClientError(
+        f"Flex {status} {error_code}: {error_msg}",
+        error_code=error_code,
+        status=status,
+        stage=stage,
+    )
 
 
 def get_flex_xml(
@@ -56,22 +98,25 @@ def get_flex_xml(
         resp = requests.get(FLEX_REQUEST_URL, params=params, timeout=15)
         resp.raise_for_status()
     except requests.RequestException as e:
-        raise FlexClientError(f"SendRequest failed: {e}")
+        raise FlexClientError(f"SendRequest failed: {e}", stage='send_request')
 
     try:
         root = ET.fromstring(resp.text)
     except ET.ParseError as e:
-        raise FlexClientError(f"SendRequest XML parse error: {e}")
+        raise FlexClientError(
+            f"SendRequest XML parse error: {e}", stage='send_request'
+        )
 
-    status = root.findtext('.//Status')
-    if status in ('Error', 'Fail'):
-        error_code = root.findtext('.//ErrorCode', '')
-        error_msg = root.findtext('.//ErrorMessage', 'Unknown error')
-        raise FlexClientError(f"Flex {status} {error_code}: {error_msg}")
+    response_error = _response_error(root, 'send_request')
+    if response_error:
+        raise response_error
 
     ref_code = root.findtext('.//ReferenceCode')
     if not ref_code:
-        raise FlexClientError("No ReferenceCode found in SendRequest response")
+        raise FlexClientError(
+            "No ReferenceCode found in SendRequest response",
+            stage='send_request',
+        )
 
     # Step 2: Poll for statement
     poll_interval = 3
@@ -87,14 +132,28 @@ def get_flex_xml(
             }, timeout=15)
             resp.raise_for_status()
         except requests.RequestException as e:
-            raise FlexClientError(f"GetStatement failed: {e}")
+            raise FlexClientError(f"GetStatement failed: {e}", stage='get_statement')
 
         text = resp.text.strip()
-        if text.startswith('<?xml') or text.startswith('<FlexQueryResponse'):
+        try:
+            root = ET.fromstring(text)
+        except ET.ParseError:
+            continue
+
+        tag = root.tag.rsplit('}', 1)[-1]
+        if tag == 'FlexQueryResponse':
             if save_path:
                 os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
                 with open(save_path, 'w', encoding='utf-8') as f:
                     f.write(text)
             return text
 
-    raise FlexClientError(f"Statement not ready after {max_wait}s")
+        response_error = _response_error(root, 'get_statement')
+        if response_error:
+            if response_error.error_code == '1019':
+                continue
+            raise response_error
+
+    raise FlexClientError(
+        f"Statement not ready after {max_wait}s", stage='get_statement'
+    )

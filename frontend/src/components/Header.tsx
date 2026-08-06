@@ -36,6 +36,10 @@ export function Header({
   const { isDark, toggle } = useTheme()
   const [cooldown, setCooldown] = useState(0)
   const [busy, setBusy] = useState(false)
+  const [feedback, setFeedback] = useState<{
+    kind: 'success' | 'error' | 'info'
+    text: string
+  } | null>(null)
   const timer = useRef<number | null>(null)
 
   useEffect(() => {
@@ -59,16 +63,22 @@ export function Header({
 
   async function refresh() {
     setBusy(true)
+    setFeedback({ kind: 'info', text: 'Requesting the latest report from IBKR…' })
     try {
       const r = await api.triggerRefresh()
       if (r.rateLimited) {
         startCooldown(r.retryAfter)
+        setFeedback({ kind: 'info', text: r.message })
+      } else if (r.failed) {
+        if (r.retryAfter > 0) startCooldown(r.retryAfter)
+        setFeedback({ kind: 'error', text: r.message })
       } else {
         onRefreshed()
         startCooldown(600)
+        setFeedback({ kind: 'success', text: r.message })
       }
-    } catch {
-      /* keep the current dashboard state */
+    } catch (err) {
+      setFeedback({ kind: 'error', text: (err as Error).message })
     } finally {
       setBusy(false)
     }
@@ -132,6 +142,20 @@ export function Header({
           <UserMenu user={user} onLogout={onLogout} onSettings={onSettings} />
         </div>
       </div>
+      {feedback && (
+        <div
+          role="status"
+          className={`border-t border-border px-4 py-2 text-center text-[12px] ${
+            feedback.kind === 'error'
+              ? 'bg-neg/10 text-neg'
+              : feedback.kind === 'success'
+                ? 'bg-pos/10 text-pos'
+                : 'bg-accent/10 text-accent'
+          }`}
+        >
+          {feedback.text}
+        </div>
+      )}
     </header>
   )
 }

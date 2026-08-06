@@ -72,7 +72,7 @@ function Dashboard({ user, onLogout, onSettings }: {
         onSettings={onSettings}
       />
 
-      <ConnectionBanner user={user} />
+      <ConnectionBanner user={user} status={status} />
 
       <main className="safe-bottom mx-auto max-w-7xl px-4 py-5 sm:px-6 sm:py-7">
         {error ? (

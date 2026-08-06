@@ -1,5 +1,10 @@
 import type { Account, Portfolio, Status, Targets } from './types'
 
+export type RefreshResult =
+  | { rateLimited: true; retryAfter: number; message: string }
+  | { rateLimited: false; failed: true; retryAfter: number; message: string }
+  | { rateLimited: false; failed: false; date: string | null; message: string }
+
 async function getJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(url, { signal, cache: 'no-store' })
   if (!res.ok) {
@@ -45,13 +50,44 @@ export const api = {
 
   status: (signal?: AbortSignal) => getJSON<Status>('/api/status', signal),
 
-  triggerRefresh: async () => {
-    const res = await fetch('/api/trigger-refresh', { cache: 'no-store' })
-    const data = await res.json()
-    if (res.status === 429) {
-      return { rateLimited: true, retryAfter: data.retry_after_seconds as number }
+  triggerRefresh: async (): Promise<RefreshResult> => {
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), 75_000)
+    try {
+      const res = await fetch('/api/trigger-refresh', {
+        method: 'POST',
+        cache: 'no-store',
+        signal: controller.signal,
+      })
+      const data = await res.json()
+      if (res.status === 429) {
+        return {
+          rateLimited: true,
+          retryAfter: data.retry_after_seconds as number,
+          message: data.message || 'Refresh is temporarily rate limited.',
+        }
+      }
+      if (!res.ok) {
+        return {
+          rateLimited: false,
+          failed: true,
+          retryAfter: Number(data.retry_after_seconds || 0),
+          message: data.error || 'Refresh failed',
+        }
+      }
+      return {
+        rateLimited: false,
+        failed: false,
+        date: data.date ?? null,
+        message: data.message || 'Refresh completed.',
+      }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        throw new Error('Refresh timed out. The server may still be processing the report.')
+      }
+      throw err
+    } finally {
+      window.clearTimeout(timeout)
     }
-    if (!res.ok) throw new Error(data.error || 'Refresh failed')
-    return { rateLimited: false, ...data }
   },
 }

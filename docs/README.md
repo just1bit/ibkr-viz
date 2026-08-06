@@ -46,20 +46,23 @@ S3-compatible storage is optional. Set `s3_bucket` and, when needed, its endpoin
 ## Data flow
 
 ```text
-setup test / hourly scheduler
-            |
-            v
-       IBKR Flex ----> latest local XML
-                           |
-                           v
-                    parser -> PostgreSQL -> Flask API -> React SPA
-                           |
-                           +----> S3 raw archive (best effort)
+setup test / manual refresh / hourly scheduler
+                      |
+                      v
+                 IBKR Flex
+                      |
+                      +----> durable incoming S3/R2 XML
+                      |
+                      v
+                parser ----> dated S3/R2 XML
+                      |
+                      v
+                PostgreSQL -> Flask API -> React SPA
 ```
 
-`fetch_and_store` is the only path that calls IBKR. It runs during credential testing and scheduled refreshes, skips users whose expected report is already stored, and applies retry backoff. The dashboard Refresh action does not call IBKR: it checks PostgreSQL, then the expected report in S3, then the user's latest local XML cache.
+`fetch_and_store` is the only path that calls IBKR. It runs during credential testing, manual refreshes and scheduled refreshes. Scheduled attempts use retry backoff; an explicitly rate-limited manual refresh bypasses scheduler backoff. Cache recovery remains available for configuration and recovery paths.
 
-IBKR report readiness and expected business dates use `market_timezone` and `report_ready_hour`. The scheduler checks eligible users hourly and processes them concurrently.
+IBKR report readiness and expected business dates use `market_timezone` and `report_ready_hour`. The scheduler checks eligible users hourly and processes them concurrently. Production App Service deployments must enable Always On while the scheduler runs inside the web process.
 
 ## Data model
 
