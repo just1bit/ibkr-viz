@@ -53,11 +53,11 @@ setup test / manual refresh / hourly scheduler
                       |
                      no
                       v
-       canonical S3/R2 XML for expected date? ---- yes ----> parse/store
+          latest local XML satisfies date? ------- yes ----> archive/store
                       |
                      no
                       v
-          latest local XML satisfies date? ------- yes ----> archive/store
+       canonical S3/R2 XML for expected date? ---- yes ----> restore/store
                       |
                      no
                       v
@@ -70,9 +70,11 @@ setup test / manual refresh / hourly scheduler
                                                PostgreSQL
 ```
 
-`fetch_and_store` is the only path that calls IBKR. It runs during credential testing, manual refreshes and scheduled refreshes. Every automatic or manual attempt checks the expected-date canonical object and then the date inside the latest local XML before contacting IBKR. Scheduled attempts use retry backoff; an explicitly rate-limited manual refresh bypasses scheduler backoff, but does not bypass a valid cached report. Per-user in-process locking also prevents a manual and scheduled attempt from issuing duplicate requests concurrently.
+`fetch_and_store` is the only path that calls IBKR. It runs during credential testing, manual refreshes and scheduled refreshes. Every automatic or manual attempt validates the date inside the latest local XML and then checks the expected-date canonical object before contacting IBKR. Scheduled attempts use exponential retry backoff; an explicitly rate-limited manual refresh bypasses scheduler backoff, but does not bypass a valid cached report. Per-user in-process locking also prevents a manual and scheduled attempt from issuing duplicate requests concurrently.
 
-There is one canonical S3/R2 object per user and actual report date. The previous unindexed `incoming/` copy is intentionally not written: the local XML plus canonical object provide retry recovery without doubling successful object writes.
+There is one canonical S3/R2 object per user and actual report date. The local XML provides the fast first cache layer; the canonical object provides durable recovery across restarts.
+
+Automatic retries use 1-hour, 2-hour, 4-hour and 8-hour backoff tiers. The fourth consecutive failure changes the user to `error` and removes them from automatic scheduling. A rate-limited manual refresh may still recover the account; a successful refresh resets the status to `healthy`.
 
 IBKR report readiness and expected business dates use `market_timezone` and `report_ready_hour`. The scheduler checks eligible users hourly and processes them concurrently. Production App Service deployments must enable Always On while the scheduler runs inside the web process.
 

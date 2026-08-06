@@ -40,6 +40,7 @@ s3_prefix: "flex_raw/"
 market_timezone: "America/New_York"
 report_ready_hour: 1       # hour in market TZ when IBKR report is expected
 fetch_retry_backoff: 3600  # seconds between retries when report is missing
+fetch_max_failures: 4      # stop automatic retries after this many consecutive failures
 refresh_cooldown: 600      # seconds between manual refresh clicks per user
 scheduler_max_workers: 8   # max concurrent users during hourly refresh
 scheduler_enabled: true
