@@ -8,6 +8,7 @@ import os
 import time
 import uuid
 import secrets
+import threading
 from collections import defaultdict
 from datetime import datetime, timedelta
 from functools import wraps
@@ -61,6 +62,7 @@ def load_config():
         'market_timezone': 'America/New_York',
         'report_ready_hour': 1,
         'fetch_retry_backoff': 3600,
+        'fetch_max_failures': 4,
         'refresh_cooldown': 600,
         'scheduler_max_workers': 8,
         'scheduler_enabled': True,
@@ -297,13 +299,30 @@ def _write_cache(user_id, xml_text):
         f.write(xml_text)
 
 
+def _accounts_from_data(data):
+    return [
+        {
+            'account_id': account['account_id'],
+            'alias': account['alias'],
+            'account_type': account['account_type'],
+        }
+        for account in data['accounts']
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Per-user data refresh
 # ---------------------------------------------------------------------------
 def _safe_log_error(user_id, error_code, error_detail,
                     report_date=None, duration_ms=None,
-                    needs_attention=False):
+                    needs_attention=False, trigger='unknown', source='unknown'):
     """Log a fetch error. Never throws."""
+    logger.error(
+        'Flex refresh failed user=%s trigger=%s source=%s code=%s '
+        'report_date=%s duration_ms=%s detail=%s',
+        user_id, trigger, source, error_code, report_date, duration_ms,
+        error_detail,
+    )
     conn = None
     try:
         conn = get_db()
@@ -316,8 +335,13 @@ def _safe_log_error(user_id, error_code, error_detail,
             storage.set_user_flex_status(
                 conn, user_id, 'needs_attention', commit=False
             )
-        elif failures >= 3:
+        elif failures >= config['fetch_max_failures']:
             storage.set_user_flex_status(conn, user_id, 'error', commit=False)
+            logger.error(
+                'Automatic Flex refresh disabled user=%s after %s '
+                'consecutive failures',
+                user_id, failures,
+            )
         conn.commit()
     except Exception:
         logger.exception('Unable to record fetch error for user %s', user_id)
@@ -326,9 +350,35 @@ def _safe_log_error(user_id, error_code, error_detail,
             return_db(conn)
 
 
-def _store_parsed_data(user_id, data, report_date):
+def _safe_log_warning(user_id, warning_code, warning_detail,
+                      report_date=None, duration_ms=None,
+                      trigger='unknown', source='unknown'):
+    """Log a recoverable refresh warning to app logs and fetch_log."""
+    logger.warning(
+        'Flex refresh warning user=%s trigger=%s source=%s code=%s '
+        'report_date=%s duration_ms=%s detail=%s',
+        user_id, trigger, source, warning_code, report_date, duration_ms,
+        warning_detail,
+    )
+    conn = None
+    try:
+        conn = get_db()
+        storage.log_fetch_warning(
+            conn, user_id, warning_code, warning_detail,
+            report_date, duration_ms,
+        )
+    except Exception:
+        logger.exception('Unable to record fetch warning for user %s', user_id)
+    finally:
+        if conn is not None:
+            return_db(conn)
+
+
+def _store_parsed_data(user_id, data, report_date, *, source='unknown',
+                       trigger='unknown', duration_ms=0):
     """Store parsed Flex data to DB. Returns error string or None."""
     conn = get_db()
+    store_error = None
     try:
         c = conn.cursor()
         c.execute('''SELECT COUNT(*) AS cnt FROM positions
@@ -344,22 +394,162 @@ def _store_parsed_data(user_id, data, report_date):
             conn, user_id, 'healthy', commit=False
         )
         storage.log_fetch_success(
-            conn, user_id, report_date, 0, commit=False
+            conn, user_id, report_date, duration_ms, commit=False
         )
         conn.commit()
+        logger.info(
+            'Flex refresh stored user=%s trigger=%s source=%s '
+            'report_date=%s duration_ms=%s',
+            user_id, trigger, source, report_date, duration_ms,
+        )
     except Exception as e:
         conn.rollback()
-        _safe_log_error(user_id, 'DB_INSERT', str(e), report_date, 0)
-        return f'Database insert failed: {e}'
+        store_error = e
     finally:
         return_db(conn)
+
+    if store_error is not None:
+        _safe_log_error(
+            user_id, 'DB_INSERT', str(store_error), report_date, duration_ms,
+            trigger=trigger, source=source,
+        )
+        return f'Database insert failed: {store_error}'
+    return None
+
+
+def _ingest_cached_xml(user_id, expected, xml_text, source, trigger):
+    """Parse and store a cache candidate when it satisfies this refresh.
+
+    Returns a fetch_and_store-compatible result, or None when the cache is
+    stale/invalid and the caller should try the next layer.
+    """
+    try:
+        data = flex_parser.parse_flex_xml(xml_text)
+    except Exception as e:
+        _safe_log_warning(
+            user_id, f'{source.upper()}_CACHE_PARSE', str(e), expected,
+            trigger=trigger, source=source,
+        )
+        return None
+
+    report_date = data['date']
+    if report_date < expected:
+        logger.info(
+            'Flex cache stale user=%s trigger=%s source=%s '
+            'report_date=%s expected_date=%s',
+            user_id, trigger, source, report_date, expected,
+        )
+        return None
+
+    accounts = _accounts_from_data(data)
+
+    # Keep both reusable layers populated before database work. If the DB
+    # transaction fails, a later automatic/manual attempt can retry locally
+    # without asking IBKR to regenerate the report.
+    if source == 'canonical':
+        try:
+            _write_cache(user_id, xml_text)
+            logger.info(
+                'Flex cache restored user=%s trigger=%s from=canonical '
+                'to=local report_date=%s',
+                user_id, trigger, report_date,
+            )
+        except Exception as e:
+            _safe_log_warning(
+                user_id, 'LOCAL_CACHE_WRITE', str(e), report_date,
+                trigger=trigger, source=source,
+            )
+    else:
+        try:
+            canonical_key = s3_store.save_raw_xml(
+                user_id, report_date, xml_text
+            )
+            if canonical_key:
+                logger.info(
+                    'Flex cache restored user=%s trigger=%s from=local '
+                    'to=canonical report_date=%s key=%s',
+                    user_id, trigger, report_date, canonical_key,
+                )
+        except Exception as e:
+            _safe_log_warning(
+                user_id, 'CANONICAL_WRITE', str(e), report_date,
+                trigger=trigger, source=source,
+            )
+
+    err = _store_parsed_data(
+        user_id, data, report_date, source=source, trigger=trigger
+    )
+    if err:
+        return None, False, err, accounts
+    return report_date, True, None, accounts
+
+
+def _recover_cached_report(user_id, expected, trigger='unknown'):
+    """Try the latest local XML, then exact-date canonical R2."""
+    local_read_failed = False
+    try:
+        xml_text = _read_cache(user_id)
+    except Exception as e:
+        local_read_failed = True
+        _safe_log_warning(
+            user_id, 'LOCAL_CACHE_READ', str(e), expected,
+            trigger=trigger, source='local',
+        )
+        xml_text = None
+
+    if xml_text:
+        logger.info(
+            'Flex cache candidate user=%s trigger=%s source=local '
+            'expected_date=%s',
+            user_id, trigger, expected,
+        )
+        result = _ingest_cached_xml(
+            user_id, expected, xml_text, 'local', trigger
+        )
+        if result:
+            return result
+    elif not local_read_failed:
+        logger.info(
+            'Flex cache miss user=%s trigger=%s source=local expected_date=%s',
+            user_id, trigger, expected,
+        )
+
+    canonical_read_failed = False
+    try:
+        xml_text = s3_store.get_raw_xml(user_id, expected)
+    except storage.ObjectStoreReadError as e:
+        canonical_read_failed = True
+        _safe_log_warning(
+            user_id, 'CANONICAL_READ', str(e), expected,
+            trigger=trigger, source='canonical',
+        )
+        xml_text = None
+
+    if xml_text:
+        logger.info(
+            'Flex cache candidate user=%s trigger=%s source=canonical '
+            'expected_date=%s',
+            user_id, trigger, expected,
+        )
+        result = _ingest_cached_xml(
+            user_id, expected, xml_text, 'canonical', trigger
+        )
+        if result:
+            return result
+    elif not canonical_read_failed:
+        logger.info(
+            'Flex cache miss user=%s trigger=%s source=canonical '
+            'expected_date=%s',
+            user_id, trigger, expected,
+        )
+
     return None
 
 
 def refresh_user_data(user_id):
-    """Check DB → S3 → local cache. NO IBKR call.
+    """Check DB → local cache → canonical R2. NO IBKR call.
 
-    Used by configure and trigger-refresh. Returns (report_date, is_new, error).
+    Used by configure. Returns (report_date, is_new, error).
     """
     conn = get_db()
     try:
@@ -381,43 +571,52 @@ def refresh_user_data(user_id):
     finally:
         return_db(conn)
 
-    # ---- DB missing → try S3 ----
-    xml_text = s3_store.get_raw_xml(user_id, expected)
-    if xml_text:
-        _write_cache(user_id, xml_text)
-        try:
-            data = flex_parser.parse_flex_xml(xml_text)
-        except Exception as e:
-            return None, False, f'S3 recovery parse failed: {e}'
-        report_date = data['date']
-        err = _store_parsed_data(user_id, data, report_date)
-        if err:
-            return None, False, err
-        return report_date, True, None
-
-    # ---- S3 missing → try local cache ----
-    xml_text = _read_cache(user_id)
-    if xml_text:
-        try:
-            data = flex_parser.parse_flex_xml(xml_text)
-        except Exception as e:
-            return None, False, f'Local cache parse failed: {e}'
-
-        report_date = data['date']
-        err = _store_parsed_data(user_id, data, report_date)
-        if err:
-            return None, False, err
-        # Re-upload to S3 (best-effort)
-        try:
-            s3_store.save_raw_xml(user_id, report_date, xml_text)
-        except Exception:
-            pass
-        return report_date, True, None
+    result = _recover_cached_report(user_id, expected, trigger='recovery')
+    if result:
+        report_date, is_new, error, _accounts = result
+        return report_date, is_new, error
 
     return None, False, 'No data available'
 
 
-def fetch_and_store(user_id, *, force=False):
+_refresh_locks = {}
+_refresh_locks_guard = threading.Lock()
+
+
+def _refresh_lock(user_id):
+    with _refresh_locks_guard:
+        return _refresh_locks.setdefault(user_id, threading.Lock())
+
+
+def _retry_backoff_seconds(consecutive_failures):
+    """Return the 1h/2h/4h/8h retry tier for the current streak."""
+    tier = max(1, min(consecutive_failures, config['fetch_max_failures']))
+    return config['fetch_retry_backoff'] * (2 ** (tier - 1))
+
+
+def fetch_and_store(user_id, *, force=False, trigger='automatic'):
+    """Run one serialized refresh for a user.
+
+    ``force`` bypasses scheduler backoff, but never bypasses a valid cache.
+    """
+    with _refresh_lock(user_id):
+        try:
+            return _fetch_and_store_unlocked(
+                user_id, force=force, trigger=trigger
+            )
+        except Exception as e:
+            logger.exception(
+                'Flex refresh pipeline crashed user=%s trigger=%s',
+                user_id, trigger,
+            )
+            _safe_log_error(
+                user_id, 'REFRESH_CRASH', str(e),
+                trigger=trigger, source='pipeline',
+            )
+            return None, False, f'Refresh failed unexpectedly: {e}', None
+
+
+def _fetch_and_store_unlocked(user_id, *, force=False, trigger='automatic'):
     """Call IBKR Flex, archive/cache XML, parse it, then store it.
 
     This is the ONLY function that calls IBKR. Used by:
@@ -427,6 +626,10 @@ def fetch_and_store(user_id, *, force=False):
 
     Returns (report_date, is_new, error, accounts_list).
     """
+    logger.info(
+        'Flex refresh started user=%s trigger=%s force=%s',
+        user_id, trigger, force,
+    )
     conn = get_db()
     try:
         user = storage.get_user_by_id(conn, user_id)
@@ -449,18 +652,66 @@ def fetch_and_store(user_id, *, force=False):
                       (user_id,))
             accounts = [{'account_id': r['account_id'], 'alias': r['alias'],
                          'account_type': r['account_type']} for r in c.fetchall()]
+            logger.info(
+                'Flex refresh satisfied user=%s trigger=%s source=database '
+                'report_date=%s expected_date=%s',
+                user_id, trigger, latest_stored, expected,
+            )
             return latest_stored, False, None, accounts
-
         last_attempt = user['last_fetch_at'] or 0
-        if not force and time.time() - last_attempt < config['fetch_retry_backoff']:
+        consecutive_failures = storage.count_consecutive_failures(conn, user_id)
+    finally:
+        return_db(conn)
+
+    # Cache work can open its own DB transaction, so release the lookup
+    # connection first. This also keeps the scheduler's connection usage
+    # bounded when several users refresh concurrently.
+    cached_result = _recover_cached_report(user_id, expected, trigger=trigger)
+    if cached_result:
+        return cached_result
+
+    if not force:
+        if consecutive_failures >= config['fetch_max_failures']:
+            logger.warning(
+                'Automatic Flex refresh skipped user=%s trigger=%s '
+                'reason=retry_exhausted failures=%s max_backoff_seconds=%s',
+                user_id, trigger, consecutive_failures,
+                _retry_backoff_seconds(consecutive_failures),
+            )
             return latest_stored, False, None, None
 
+        backoff_seconds = _retry_backoff_seconds(consecutive_failures)
+        elapsed = time.time() - last_attempt
+        if elapsed < backoff_seconds:
+            remaining = int(backoff_seconds - elapsed)
+            logger.info(
+                'Automatic Flex refresh skipped user=%s trigger=%s '
+                'reason=backoff failures=%s backoff_seconds=%s '
+                'retry_after_seconds=%s',
+                user_id, trigger, consecutive_failures,
+                backoff_seconds, remaining,
+            )
+            return latest_stored, False, None, None
+    elif consecutive_failures:
+        logger.info(
+            'Manual Flex refresh bypassing retry backoff user=%s '
+            'trigger=%s failures=%s',
+            user_id, trigger, consecutive_failures,
+        )
+
+    conn = get_db()
+    try:
         storage.set_user_fetch_at(conn, user_id, time.time())
     finally:
         return_db(conn)
 
     t0 = time.time()
     local_path = _cache_path(user_id)
+    logger.info(
+        'Calling IBKR Flex API user=%s trigger=%s expected_date=%s '
+        'previous_failures=%s',
+        user_id, trigger, expected, consecutive_failures,
+    )
 
     try:
         xml_text = flex_client.get_flex_xml(
@@ -474,38 +725,63 @@ def fetch_and_store(user_id, *, force=False):
         _safe_log_error(
             user_id, error_code, str(e), expected, elapsed_ms,
             needs_attention=e.needs_attention,
+            trigger=trigger, source='ibkr',
         )
         return None, False, f'IBKR fetch failed: {e}', None
     except Exception as e:
         elapsed_ms = int((time.time() - t0) * 1000)
-        _safe_log_error(user_id, 'FLEX_TIMEOUT', str(e), expected, elapsed_ms)
-        return None, False, f'IBKR fetch failed: {e}', None
+        error_code = 'LOCAL_CACHE_WRITE' if isinstance(e, OSError) else 'FLEX_UNEXPECTED'
+        _safe_log_error(
+            user_id, error_code, str(e), expected, elapsed_ms,
+            trigger=trigger,
+            source='local' if isinstance(e, OSError) else 'ibkr',
+        )
+        label = 'Local cache write failed' if isinstance(e, OSError) else 'IBKR fetch failed'
+        return None, False, f'{label}: {e}', None
 
-    try:
-        s3_store.save_incoming_xml(user_id, xml_text)
-    except Exception:
-        logger.exception('Unable to archive incoming Flex XML for user %s', user_id)
+    logger.info(
+        'IBKR Flex XML received user=%s trigger=%s expected_date=%s '
+        'duration_ms=%s local_cache=%s',
+        user_id, trigger, expected, int((time.time() - t0) * 1000), local_path,
+    )
 
     try:
         data = flex_parser.parse_flex_xml(xml_text)
     except Exception as e:
         elapsed_ms = int((time.time() - t0) * 1000)
-        _safe_log_error(user_id, 'FLEX_PARSE', str(e), expected, elapsed_ms)
+        _safe_log_error(
+            user_id, 'FLEX_PARSE', str(e), expected, elapsed_ms,
+            trigger=trigger, source='ibkr',
+        )
         return None, False, f'Parse failed: {e}', None
 
     report_date = data['date']
-    accounts = [{'account_id': a['account_id'], 'alias': a['alias'],
-                 'account_type': a['account_type']} for a in data['accounts']]
+    accounts = _accounts_from_data(data)
 
     # Archive the canonical, actual report date before database work so a DB
     # failure can be recovered without asking IBKR to regenerate the report.
     try:
-        s3_store.save_raw_xml(user_id, report_date, xml_text)
-    except Exception:
-        logger.exception('Unable to archive Flex XML for user %s', user_id)
+        canonical_key = s3_store.save_raw_xml(
+            user_id, report_date, xml_text
+        )
+        if canonical_key:
+            logger.info(
+                'Canonical Flex XML archived user=%s trigger=%s '
+                'report_date=%s key=%s',
+                user_id, trigger, report_date, canonical_key,
+            )
+    except Exception as e:
+        _safe_log_warning(
+            user_id, 'CANONICAL_WRITE', str(e), report_date,
+            int((time.time() - t0) * 1000),
+            trigger=trigger, source='ibkr',
+        )
 
     # Store to DB
-    err = _store_parsed_data(user_id, data, report_date)
+    err = _store_parsed_data(
+        user_id, data, report_date, source='ibkr', trigger=trigger,
+        duration_ms=int((time.time() - t0) * 1000),
+    )
     if err:
         return None, False, err, accounts
 
@@ -517,23 +793,41 @@ def fetch_and_store(user_id, *, force=False):
 # ---------------------------------------------------------------------------
 def scheduled_refresh():
     """Hourly tick: refresh all eligible users concurrently."""
-    conn = get_db()
-    users = storage.get_active_users_with_credentials(conn)
-    return_db(conn)
+    conn = None
+    try:
+        conn = get_db()
+        users = storage.get_active_users_with_credentials(conn)
+    except Exception:
+        logger.exception('Unable to load users for scheduled Flex refresh')
+        return
+    finally:
+        if conn is not None:
+            return_db(conn)
 
     if not users:
+        logger.info('Scheduled Flex refresh found no eligible users')
         return
+
+    logger.info('Scheduled Flex refresh started eligible_users=%s', len(users))
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
     max_workers = config.get('scheduler_max_workers', 8)
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(fetch_and_store, u['user_id']): u['user_id']
+        futures = {
+            pool.submit(
+                fetch_and_store, u['user_id'], trigger='automatic'
+            ): u['user_id']
                    for u in users}
         for future in as_completed(futures):
             user_id = futures[future]
             try:
-                future.result()
+                report_date, is_new, error, _accounts = future.result()
+                logger.info(
+                    'Scheduled Flex refresh finished user=%s report_date=%s '
+                    'is_new=%s error=%s',
+                    user_id, report_date, is_new, bool(error),
+                )
             except Exception:
                 logger.exception('Scheduled refresh crashed for user %s', user_id)
 
@@ -814,7 +1108,7 @@ def setup_test_flex():
 
     # A credential test is an explicit user action, so bypass scheduler backoff.
     report_date, is_new, error, accounts = fetch_and_store(
-        g.user_id, force=True
+        g.user_id, force=True, trigger='credential_test'
     )
 
     if error:
@@ -1043,6 +1337,10 @@ def trigger_refresh():
     elapsed = now_ts - last_ts
     if elapsed < cooldown:
         remaining = int(cooldown - elapsed)
+        logger.info(
+            'Manual Flex refresh rate limited user=%s retry_after_seconds=%s',
+            user_id, remaining,
+        )
         return jsonify({
             'error': 'Rate limited',
             'retry_after_seconds': remaining,
@@ -1050,9 +1348,10 @@ def trigger_refresh():
         }), 429
 
     storage.set_user_manual_at(conn, user_id, now_ts)
+    logger.info('Manual Flex refresh accepted user=%s', user_id)
 
     new_date, is_new, error, _accounts = fetch_and_store(
-        user_id, force=True
+        user_id, force=True, trigger='manual'
     )
     if error:
         current_user = storage.get_user_by_id(conn, user_id)

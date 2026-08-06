@@ -170,11 +170,11 @@ def set_user_manual_at(conn, user_id: str, ts: float, *, commit=True):
 
 def get_active_users_with_credentials(conn):
     c = conn.cursor()
-    c.execute('''SELECT * FROM users
+    c.execute("""SELECT * FROM users
                  WHERE is_active = 1
                    AND flex_token_enc != ''
                    AND flex_query_id != ''
-                   AND flex_status IN ('healthy', 'error')''')
+                   AND flex_status = 'healthy'""")
     return c.fetchall()
 
 
@@ -271,6 +271,18 @@ def log_fetch_error(conn, user_id: str, error_code: str, error_detail: str,
         conn.commit()
 
 
+def log_fetch_warning(conn, user_id: str, warning_code: str,
+                      warning_detail: str, report_date: str = None,
+                      duration_ms: int = None, *, commit=True):
+    c = conn.cursor()
+    c.execute('''INSERT INTO fetch_log
+        (user_id, status, error_code, error_detail, report_date, duration_ms, created_at)
+        VALUES (?, 'warning', ?, ?, ?, ?, ?)''',
+        (user_id, warning_code, warning_detail, report_date, duration_ms, _utc_now()))
+    if commit:
+        conn.commit()
+
+
 def get_user_fetch_errors(conn, user_id: str, limit: int = 5):
     c = conn.cursor()
     c.execute('''SELECT * FROM fetch_log
@@ -282,7 +294,8 @@ def get_user_fetch_errors(conn, user_id: str, limit: int = 5):
 def count_consecutive_failures(conn, user_id: str) -> int:
     c = conn.cursor()
     c.execute('''SELECT status FROM fetch_log
-                 WHERE user_id = ? ORDER BY created_at DESC LIMIT 20''',
+                 WHERE user_id = ? AND status IN ('success', 'error')
+                 ORDER BY created_at DESC LIMIT 20''',
               (user_id,))
     count = 0
     for row in c.fetchall():
@@ -296,6 +309,11 @@ def count_consecutive_failures(conn, user_id: str) -> int:
 # ---------------------------------------------------------------------------
 # S3 raw XML store
 # ---------------------------------------------------------------------------
+
+
+class ObjectStoreReadError(RuntimeError):
+    """Canonical object lookup failed for a reason other than not-found."""
+
 
 class S3Store:
     def __init__(self, config):
@@ -316,11 +334,6 @@ class S3Store:
     def _key(self, user_id, date_str):
         return f'{self.prefix}{user_id}/{date_str}.xml'
 
-    def _incoming_key(self, user_id):
-        import uuid
-        timestamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-        return f'{self.prefix}{user_id}/incoming/{timestamp}-{uuid.uuid4().hex}.xml'
-
     def _put_xml(self, key, xml_text):
         self.client.put_object(
             Bucket=self.bucket, Key=key,
@@ -328,19 +341,12 @@ class S3Store:
             ContentType='application/xml',
         )
 
-    def save_incoming_xml(self, user_id, xml_text):
-        """Durably preserve a response before parsing or database work."""
-        if not self.enabled:
-            return None
-        key = self._incoming_key(user_id)
-        self._put_xml(key, xml_text)
-        return key
-
     def save_raw_xml(self, user_id, date_str, xml_text):
         if not self.enabled:
-            return
+            return None
         key = self._key(user_id, date_str)
         self._put_xml(key, xml_text)
+        return key
 
     def get_raw_xml(self, user_id, date_str):
         if not self.enabled:
@@ -349,15 +355,15 @@ class S3Store:
         try:
             resp = self.client.get_object(Bucket=self.bucket, Key=key)
             return resp['Body'].read().decode('utf-8')
-        except Exception:
-            return None
-
-    def verify_raw_xml(self, user_id, date_str) -> bool:
-        if not self.enabled:
-            return True
-        key = self._key(user_id, date_str)
-        try:
-            self.client.head_object(Bucket=self.bucket, Key=key)
-            return True
-        except Exception:
-            return False
+        except Exception as e:
+            response = getattr(e, 'response', {}) or {}
+            error = response.get('Error', {}) or {}
+            code = str(error.get('Code', ''))
+            status = (response.get('ResponseMetadata', {}) or {}).get(
+                'HTTPStatusCode'
+            )
+            if code in ('NoSuchKey', 'NotFound', '404') or status == 404:
+                return None
+            raise ObjectStoreReadError(
+                f'Unable to read canonical object {key}: {e}'
+            ) from e
