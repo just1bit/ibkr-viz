@@ -85,6 +85,10 @@ export interface Status {
   last_refresh: string
   flex_status: 'not_configured' | 'healthy' | 'error' | 'needs_attention'
   refresh_cooldown_remaining: number
+  last_attempt_status?: 'success' | 'error' | null
+  last_error_code?: string | null
+  last_error_detail?: string | null
+  last_attempt_at?: string | null
 }
 
 export type DonutView = 'ticker' | 'asset_class'

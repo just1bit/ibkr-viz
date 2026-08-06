@@ -51,6 +51,10 @@ def connect(config):
 def return_conn(conn, config):
     """Return a connection to the pool."""
     global _pg_pool
+    if not conn.closed:
+        import psycopg2.extensions
+        if conn.get_transaction_status() != psycopg2.extensions.TRANSACTION_STATUS_IDLE:
+            conn.rollback()
     if _pg_pool is not None:
         _pg_pool.putconn(conn)
     else:
@@ -132,32 +136,36 @@ def set_user_flex_credentials(conn, config, user_id: str,
     return get_user_by_id(conn, user_id)
 
 
-def set_user_flex_status(conn, user_id: str, status: str):
+def set_user_flex_status(conn, user_id: str, status: str, *, commit=True):
     c = conn.cursor()
     c.execute('UPDATE users SET flex_status = ? WHERE user_id = ?',
               (status, user_id))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def set_user_last_refresh(conn, user_id: str, report_date: str):
+def set_user_last_refresh(conn, user_id: str, report_date: str, *, commit=True):
     c = conn.cursor()
     c.execute('UPDATE users SET last_refresh = ? WHERE user_id = ?',
               (report_date, user_id))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def set_user_fetch_at(conn, user_id: str, ts: float):
+def set_user_fetch_at(conn, user_id: str, ts: float, *, commit=True):
     c = conn.cursor()
     c.execute('UPDATE users SET last_fetch_at = ? WHERE user_id = ?',
               (ts, user_id))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def set_user_manual_at(conn, user_id: str, ts: float):
+def set_user_manual_at(conn, user_id: str, ts: float, *, commit=True):
     c = conn.cursor()
     c.execute('UPDATE users SET last_manual_at = ? WHERE user_id = ?',
               (ts, user_id))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def get_active_users_with_credentials(conn):
@@ -240,23 +248,27 @@ def set_targets(conn, user_id: str, account_id: str, targets: dict):
 # Fetch log helpers
 # ---------------------------------------------------------------------------
 
-def log_fetch_success(conn, user_id: str, report_date: str, duration_ms: int):
+def log_fetch_success(conn, user_id: str, report_date: str, duration_ms: int,
+                      *, commit=True):
     c = conn.cursor()
     c.execute('''INSERT INTO fetch_log
         (user_id, status, report_date, duration_ms, created_at)
         VALUES (?, 'success', ?, ?, ?)''',
         (user_id, report_date, duration_ms, _utc_now()))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def log_fetch_error(conn, user_id: str, error_code: str, error_detail: str,
-                    report_date: str = None, duration_ms: int = None):
+                    report_date: str = None, duration_ms: int = None,
+                    *, commit=True):
     c = conn.cursor()
     c.execute('''INSERT INTO fetch_log
         (user_id, status, error_code, error_detail, report_date, duration_ms, created_at)
         VALUES (?, 'error', ?, ?, ?, ?, ?)''',
         (user_id, error_code, error_detail, report_date, duration_ms, _utc_now()))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def get_user_fetch_errors(conn, user_id: str, limit: int = 5):
@@ -304,15 +316,31 @@ class S3Store:
     def _key(self, user_id, date_str):
         return f'{self.prefix}{user_id}/{date_str}.xml'
 
-    def save_raw_xml(self, user_id, date_str, xml_text):
-        if not self.enabled:
-            return
-        key = self._key(user_id, date_str)
+    def _incoming_key(self, user_id):
+        import uuid
+        timestamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+        return f'{self.prefix}{user_id}/incoming/{timestamp}-{uuid.uuid4().hex}.xml'
+
+    def _put_xml(self, key, xml_text):
         self.client.put_object(
             Bucket=self.bucket, Key=key,
             Body=xml_text.encode('utf-8'),
             ContentType='application/xml',
         )
+
+    def save_incoming_xml(self, user_id, xml_text):
+        """Durably preserve a response before parsing or database work."""
+        if not self.enabled:
+            return None
+        key = self._incoming_key(user_id)
+        self._put_xml(key, xml_text)
+        return key
+
+    def save_raw_xml(self, user_id, date_str, xml_text):
+        if not self.enabled:
+            return
+        key = self._key(user_id, date_str)
+        self._put_xml(key, xml_text)
 
     def get_raw_xml(self, user_id, date_str):
         if not self.enabled:

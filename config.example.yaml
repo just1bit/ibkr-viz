@@ -33,6 +33,8 @@ s3_region: "auto"
 s3_access_key: ""
 s3_secret_key: ""
 s3_prefix: "flex_raw/"
+# Override only when the default project-local cache is unsuitable.
+# flex_cache_dir: "/home/data/flex_cache"  # recommended for Azure App Service
 
 # --- Refresh Scheduling -------------------------------------------------------
 market_timezone: "America/New_York"
@@ -40,6 +42,7 @@ report_ready_hour: 1       # hour in market TZ when IBKR report is expected
 fetch_retry_backoff: 3600  # seconds between retries when report is missing
 refresh_cooldown: 600      # seconds between manual refresh clicks per user
 scheduler_max_workers: 8   # max concurrent users during hourly refresh
+scheduler_enabled: true
 
 # --- Admin (optional) ---------------------------------------------------------
 # Existing users with these Google emails are promoted at application startup.

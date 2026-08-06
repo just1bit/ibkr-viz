@@ -38,12 +38,12 @@ IBKR Portfolio Viz turns each user's latest Interactive Brokers Flex statement i
 
 ### Refresh and recovery
 
-- `fetch_and_store` is the only IBKR-calling path. Credential tests and the hourly scheduler use it.
+- `fetch_and_store` is the only IBKR-calling path. Credential tests, manual refreshes and the hourly scheduler use it.
 - A fetch is skipped when PostgreSQL already contains the expected report date; retry backoff prevents repeated IBKR attempts when a report is unavailable.
-- Successful raw XML is saved immediately to the user's latest local cache, parsed into PostgreSQL and archived to S3 on a best-effort basis.
-- The dashboard Refresh action is recovery-only: PostgreSQL → expected-date S3 object → latest local cache. It is rate-limited and never calls IBKR.
+- Successful raw XML is saved immediately to the user's latest local cache and an incoming S3/R2 object. After parsing, it is archived under the actual report date before the PostgreSQL transaction begins.
+- The dashboard Refresh action is rate-limited and performs an explicit IBKR fetch when the expected report is not already stored.
 - Expected report dates are calculated in the configured market timezone, respect `report_ready_hour`, and roll weekends back to Friday.
-- Repeated failures move a user through `error` to `needs_attention`; users needing attention are excluded from scheduled fetches until credentials are updated.
+- Repeated transient failures move a user to `error`. Only known credential or query errors move a user to `needs_attention`; an explicit manual credential test can recover the state.
 
 ## Flex data contract
 

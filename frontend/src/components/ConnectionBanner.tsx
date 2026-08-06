@@ -1,15 +1,18 @@
-import type { UserProfile } from '../lib/types'
+import type { Status, UserProfile } from '../lib/types'
 
 interface Props {
   user: UserProfile
+  status?: Status | null
 }
 
-export function ConnectionBanner({ user }: Props) {
-  if (user.flex_status === 'healthy' || user.flex_status === 'not_configured') {
+export function ConnectionBanner({ user, status }: Props) {
+  const flexStatus = status?.flex_status ?? user.flex_status
+  if (flexStatus === 'healthy' || flexStatus === 'not_configured') {
     return null
   }
 
-  const isRed = user.flex_status === 'needs_attention'
+  const isRed = flexStatus === 'needs_attention'
+  const detail = status?.last_error_detail
 
   return (
     <div
@@ -22,8 +25,8 @@ export function ConnectionBanner({ user }: Props) {
       <span className="text-[15px]">{isRed ? '⚠' : 'ℹ'}</span>
       <span>
         {isRed
-          ? 'Your IBKR Flex token needs attention. Please update your credentials in settings.'
-          : 'Your IBKR connection is experiencing issues. Data may be stale.'}
+          ? detail || 'Your IBKR Flex credentials need attention. Please check settings.'
+          : detail || 'The latest IBKR refresh failed. The app will retry automatically.'}
       </span>
     </div>
   )
