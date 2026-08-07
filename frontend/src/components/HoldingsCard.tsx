@@ -207,12 +207,12 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
 
   return (
     <div className="overflow-visible rounded-[var(--radius-lg)] border border-border bg-surface shadow-[var(--shadow)]">
-      <div className="grid grid-cols-1 gap-2 px-5 pt-5 sm:h-[46px] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start sm:gap-3 sm:px-6">
-        <div className="flex items-baseline gap-3">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 px-4 pt-4 sm:h-[46px] sm:px-6 sm:pt-5">
+        <div className="flex min-w-0 flex-col sm:flex-row sm:items-baseline sm:gap-3">
           <h2 className="text-[15px] font-semibold tracking-tight text-text">Holdings</h2>
-          <span className="text-[12px] text-faint tabular-nums">{rows.length} positions · {portfolio.date}</span>
+          <span className="mt-1 text-[11px] text-faint tabular-nums sm:mt-0 sm:text-[12px]">{rows.length} positions · {portfolio.date}</span>
         </div>
-        <div className="flex h-11 min-w-0 items-center justify-end gap-2 sm:h-[26px]">
+        <div className={`flex min-w-0 items-center justify-end gap-2 sm:h-[26px] ${editing ? 'col-span-2 mt-2 w-full justify-between sm:col-span-1 sm:mt-0 sm:w-auto sm:justify-end' : ''}`}>
           {editing ? (
             <>
               <span className={`text-[11px] font-medium tabular-nums ${balanced ? 'text-pos' : 'text-warn'}`}>
@@ -236,8 +236,8 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
         </div>
       </div>
 
-      <div className="flex flex-col gap-5 p-4 sm:flex-row sm:p-5 sm:pb-6">
-        <div className="relative h-[320px] w-full shrink-0 self-start sm:w-[320px]">
+      <div className="flex flex-col gap-3 p-4 sm:gap-5 sm:p-5 sm:pb-6 xl:flex-row">
+        <div className="relative h-[248px] w-full shrink-0 self-start sm:h-[280px] xl:h-[320px] xl:w-[320px]">
           <div ref={elRef} className="absolute inset-0" />
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center px-4 text-center">
             {hoveredHolding ? (
@@ -269,7 +269,7 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
           </div>
         </div>
 
-        <div className="hidden min-w-0 flex-1 overflow-x-auto scroll-thin sm:block">
+        <div className="hidden min-w-0 flex-1 overflow-x-auto scroll-thin xl:block">
           <table className="w-full min-w-[780px] table-fixed border-collapse text-[12px]">
             <colgroup>
               <col className="w-[23.25%]" />
@@ -369,7 +369,7 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
 
         {/* Mobile holdings list: keeps allocation and rebalance controls in
             view instead of hiding them beyond a 680px horizontal table. */}
-        <div className="min-w-0 flex-1 space-y-2 sm:hidden">
+        <div className="grid min-w-0 flex-1 grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:hidden">
           {rows.map((h) => {
             const sym = displaySymbol(h)
             const cur = curPcts[sym] ?? 0
@@ -377,31 +377,31 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
             const { driftPp, action } = rebalanceMetrics(cur, tgt, allocationTotal)
 
             return (
-              <div key={`${h.account_id}-${h.ticker}-mobile`} className="rounded-[12px] border border-border/70 bg-surface-2/35 p-3">
+              <div key={`${h.account_id}-${h.ticker}-mobile`} className="rounded-[12px] border border-border/70 bg-surface-2/35 p-3.5 max-[350px]:p-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5">
                       <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: slices.find((s) => s.name === sym)?.color ?? NEUTRAL_GRAY }} />
                       <span className="font-semibold text-text">{sym}</span>
-                      <span className={`rounded-full px-1.5 py-px text-[9px] font-semibold tracking-wide ${CLASS_TONE[h.asset_class] ?? 'bg-faint/10 text-muted'}`}>{h.asset_class}</span>
+                      <span className={`rounded-full px-1.5 py-px text-[10px] font-semibold tracking-wide ${CLASS_TONE[h.asset_class] ?? 'bg-faint/10 text-muted'}`}>{h.asset_class}</span>
                     </div>
-                    <div className="mt-1 truncate text-[10px] text-faint">{h.full_name}</div>
+                    <div className="mt-1 truncate text-[12px] text-muted">{h.full_name}</div>
                   </div>
-                  <div className={`shrink-0 text-right text-[13px] font-semibold tabular-nums text-text ${hidden ? 'masked' : ''}`}>
+                  <div className={`shrink-0 text-right text-[15px] font-semibold tabular-nums text-text ${hidden ? 'masked' : ''}`}>
                     {fmtUSDFull(h.market_value, hidden)}
                   </div>
                 </div>
 
-                <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border/60 pt-3">
+                <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 border-t border-border/60 pt-3 max-[350px]:gap-x-3">
                   <MobileMetric label="Day P/L">
                     <span className={`font-medium ${tone(h.day_pnl)} ${hidden ? 'masked' : ''}`}>
                       {h.day_pnl >= 0 ? '+' : ''}{fmtUSDFull(h.day_pnl, hidden)}
-                      <span className="ml-1 text-[10px]">{h.prev_close_price ? `(${dayPct(h) >= 0 ? '+' : ''}${dayPct(h).toFixed(2)}%)` : ''}</span>
+                      <span className="ml-1 text-[12px] max-[350px]:ml-0 max-[350px]:block max-[350px]:text-[11px]">{h.prev_close_price ? `(${dayPct(h) >= 0 ? '+' : ''}${dayPct(h).toFixed(2)}%)` : ''}</span>
                     </span>
                   </MobileMetric>
                   <MobileMetric label="Allocation / drift">
                     <span className="text-text">{cur.toFixed(1)}%</span>
-                    <span className={`ml-1 text-[10px] ${Math.abs(driftPp) < 0.05 ? 'text-faint' : 'text-muted'}`}>
+                    <span className={`ml-1 text-[12px] ${Math.abs(driftPp) < 0.05 ? 'text-faint' : 'text-muted'}`}>
                       ({driftPp >= 0 ? '+' : ''}{driftPp.toFixed(1)}pp)
                     </span>
                   </MobileMetric>
@@ -474,8 +474,8 @@ function Td({ align, className = '', children }: { align: 'left' | 'right'; clas
 function MobileMetric({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="min-w-0">
-      <div className="mb-1 text-[9px] font-medium uppercase tracking-wide text-faint">{label}</div>
-      <div className="h-11 text-[12px] tabular-nums text-muted">{children}</div>
+      <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-faint max-[350px]:whitespace-nowrap max-[350px]:text-[9px] max-[350px]:tracking-normal">{label}</div>
+      <div className="text-[14px] leading-snug tabular-nums text-muted">{children}</div>
     </div>
   )
 }

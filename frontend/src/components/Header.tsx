@@ -123,12 +123,12 @@ export function Header({
 
   return (
     <header className="safe-top sticky top-0 z-40 border-b border-border bg-bg/80 backdrop-blur-xl">
-      <div className="mx-auto flex min-h-16 w-full max-w-7xl flex-wrap items-center gap-3 px-4 py-3 sm:h-16 sm:flex-nowrap sm:px-6 sm:py-0">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-[10px] bg-accent/12 text-accent">
-            <span className="h-2.5 w-2.5 rounded-full bg-accent" />
+      <div className="mx-auto flex min-h-14 w-full max-w-7xl flex-nowrap items-center gap-2 px-3 py-2 sm:h-16 sm:min-h-16 sm:gap-3 sm:px-6 sm:py-0">
+        <div className="flex shrink-0 items-center gap-2.5">
+          <div className="flex h-10 w-10 items-center justify-center rounded-[12px] bg-accent/12 text-accent sm:h-8 sm:w-8 sm:rounded-[10px]">
+            <span className="h-3 w-3 rounded-full bg-accent sm:h-2.5 sm:w-2.5" />
           </div>
-          <div className="leading-tight">
+          <div className="hidden leading-tight sm:block">
             <div className="text-[15px] font-semibold tracking-tight text-text">
               Portfolio
             </div>
@@ -141,7 +141,7 @@ export function Header({
           </div>
         </div>
 
-        <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:ml-auto sm:w-auto sm:flex-nowrap">
+        <div className="ml-auto flex min-w-0 flex-1 items-center justify-end gap-1.5 sm:w-auto sm:flex-none sm:gap-2">
           <AccountSelect
             accounts={accounts}
             value={account}
@@ -153,7 +153,7 @@ export function Header({
             onClick={refresh}
             disabled={busy || cooldown > 0}
             title="Refresh data"
-            className="flex h-11 w-11 items-center justify-center gap-1.5 rounded-[10px] border border-border bg-surface px-3 text-[13px] font-medium text-text transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50 sm:h-9 sm:w-auto sm:justify-start"
+            className="flex h-10 w-10 shrink-0 items-center justify-center gap-1.5 rounded-[10px] border border-border bg-surface px-2.5 text-[13px] font-medium text-text transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50 min-[375px]:h-9 min-[375px]:w-9 sm:w-auto sm:justify-start sm:px-3"
           >
             <RefreshIcon className={`h-4 w-4 ${busy ? 'animate-spin-slow' : ''}`} />
             <span className="hidden sm:inline tabular-nums">
@@ -161,15 +161,23 @@ export function Header({
             </span>
           </button>
 
-          <IconButton onClick={onToggleHidden} title={hidden ? 'Show amounts' : 'Hide amounts'}>
+          <IconButton className="hidden min-[375px]:flex" onClick={onToggleHidden} title={hidden ? 'Show amounts' : 'Hide amounts'}>
             {hidden ? <EyeOffIcon /> : <EyeIcon />}
           </IconButton>
 
-          <IconButton onClick={toggle} title="Toggle theme">
+          <IconButton className="hidden min-[375px]:flex" onClick={toggle} title="Toggle theme">
             {isDark ? <SunIcon /> : <MoonIcon />}
           </IconButton>
 
-          <UserMenu user={user} onLogout={onLogout} onSettings={onSettings} />
+          <UserMenu
+            user={user}
+            onLogout={onLogout}
+            onSettings={onSettings}
+            hidden={hidden}
+            onToggleHidden={onToggleHidden}
+            isDark={isDark}
+            onToggleTheme={toggle}
+          />
         </div>
       </div>
       {feedback && (
@@ -203,16 +211,18 @@ function IconButton({
   children,
   onClick,
   title,
+  className = '',
 }: {
   children: React.ReactNode
   onClick: () => void
   title: string
+  className?: string
 }) {
   return (
     <button
       onClick={onClick}
       title={title}
-      className="flex h-11 w-11 items-center justify-center rounded-[10px] border border-border bg-surface text-muted transition-colors hover:bg-surface-2 hover:text-text sm:h-9 sm:w-9"
+      className={`h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-border bg-surface text-muted transition-colors hover:bg-surface-2 hover:text-text ${className}`}
     >
       {children}
     </button>

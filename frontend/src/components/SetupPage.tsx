@@ -1,9 +1,14 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../hooks/useAuth'
 
 type Step = 'input' | 'testing' | 'test_done' | 'saving' | 'saved'
 
-export function SetupPage({ onDone }: { onDone?: () => void }) {
+interface Props {
+  mode?: 'setup' | 'settings'
+  onDone?: () => void
+}
+
+export function SetupPage({ mode = 'setup', onDone }: Props) {
   const { user, testFlex, configureFlex } = useAuth()
   const [token, setToken] = useState('')
   const [queryId, setQueryId] = useState(user?.flex_query_id ?? '')
@@ -15,6 +20,15 @@ export function SetupPage({ onDone }: { onDone?: () => void }) {
   } | null>(null)
   const [error, setError] = useState('')
   const [configureError, setConfigureError] = useState('')
+
+  useEffect(() => {
+    if (!onDone) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onDone()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onDone])
 
   async function handleTest() {
     if (!token.trim() || !queryId.trim()) {
@@ -52,13 +66,27 @@ export function SetupPage({ onDone }: { onDone?: () => void }) {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-4">
-      <div className="w-full max-w-md">
+    <div className="min-h-screen px-4 py-5 sm:flex sm:items-center sm:justify-center sm:px-6 sm:py-12">
+      <div className="mx-auto w-full max-w-md">
+        {onDone && (
+          <button
+            type="button"
+            onClick={onDone}
+            className="mb-8 inline-flex min-h-11 items-center gap-2 rounded-[10px] px-1 text-[14px] font-medium text-muted transition-colors hover:text-text sm:mb-7 sm:min-h-0 sm:text-[13px]"
+          >
+            <span aria-hidden="true" className="text-[18px] leading-none">←</span>
+            Back to dashboard
+          </button>
+        )}
         <h1 className="text-[22px] font-semibold tracking-tight text-text">
-          Welcome{user?.name ? `, ${user.name.split(' ')[0]}` : ''}
+          {mode === 'settings'
+            ? 'IBKR settings'
+            : `Welcome${user?.name ? `, ${user.name.split(' ')[0]}` : ''}`}
         </h1>
         <p className="mt-2 text-[14px] leading-relaxed text-muted">
-          Connect your Interactive Brokers account to get started.
+          {mode === 'settings'
+            ? 'Update the Flex Query used to keep your portfolio data in sync.'
+            : 'Connect your Interactive Brokers account to get started.'}
         </p>
 
         <div className="mt-7 space-y-4">
@@ -86,7 +114,7 @@ export function SetupPage({ onDone }: { onDone?: () => void }) {
                 placeholder={user?.flex_token_masked
                   ? 'Paste a new token to replace the saved token'
                   : 'Paste your IBKR Flex token'}
-                className="h-11 w-full rounded-[10px] border border-border bg-surface px-3 pr-10 text-[16px] text-text placeholder:text-faint focus:border-accent focus:outline-none sm:h-10 sm:text-[13px]"
+                className="h-11 w-full rounded-[10px] border border-border bg-surface px-3 pr-16 text-[16px] text-text placeholder:text-faint focus:border-accent focus:outline-none sm:h-10 sm:text-[13px]"
               />
               <button
                 type="button"
@@ -111,11 +139,11 @@ export function SetupPage({ onDone }: { onDone?: () => void }) {
             />
           </div>
 
-          <div className="flex gap-3">
+          <div className="flex gap-3 max-[359px]:flex-col">
             <button
               onClick={handleTest}
               disabled={step === 'testing' || step === 'saving'}
-              className="flex h-11 items-center gap-2 rounded-[10px] border border-border bg-surface px-4 text-[13px] font-medium text-text transition-colors hover:bg-surface-2 disabled:opacity-50 sm:h-10"
+              className="flex h-11 items-center gap-2 rounded-[10px] border border-border bg-surface px-4 text-[13px] font-medium text-text transition-colors hover:bg-surface-2 disabled:opacity-50 max-[359px]:w-full max-[359px]:justify-center sm:h-10"
             >
               {step === 'testing' ? (
                 <>
@@ -130,7 +158,7 @@ export function SetupPage({ onDone }: { onDone?: () => void }) {
             <button
               onClick={handleSave}
               disabled={step !== 'test_done'}
-              className="flex h-11 items-center gap-2 rounded-[10px] bg-accent px-4 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50 sm:h-10"
+              className="flex h-11 items-center gap-2 rounded-[10px] bg-accent px-4 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50 max-[359px]:w-full max-[359px]:justify-center sm:h-10"
             >
               {step === 'saving' ? (
                 <>

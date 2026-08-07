@@ -42,6 +42,7 @@ export function DayPnlCard({ portfolio, hidden }: Props) {
 
   const total = portfolio.summary.total_day_pnl
   const { elRef } = useEChart(() => barOption(rows, hidden), [rows, hidden])
+  const mobileChartHeight = Math.max(210, rows.length * 27 + 28)
 
   return (
     <div className="flex h-full flex-col rounded-[var(--radius-lg)] border border-border bg-surface shadow-[var(--shadow)]">
@@ -58,7 +59,10 @@ export function DayPnlCard({ portfolio, hidden }: Props) {
           {fmtUSD(total, hidden)}
         </span>
       </div>
-      <div className="relative min-h-[200px] flex-1 p-2 sm:p-3">
+      <div
+        className="relative min-h-[var(--mobile-chart-height)] flex-1 p-2 sm:min-h-[200px] sm:p-3"
+        style={{ '--mobile-chart-height': `${mobileChartHeight}px` } as React.CSSProperties}
+      >
         <div ref={elRef} className="absolute inset-0" />
       </div>
     </div>
@@ -67,6 +71,7 @@ export function DayPnlCard({ portfolio, hidden }: Props) {
 
 function barOption(rows: Row[], hidden: boolean): echarts.EChartsCoreOption {
   const t = getChartTheme()
+  const mobile = window.innerWidth < 640
   return {
     tooltip: {
       trigger: 'item',
@@ -74,7 +79,7 @@ function barOption(rows: Row[], hidden: boolean): echarts.EChartsCoreOption {
       borderColor: t.tooltipBorder,
       borderWidth: 1,
       padding: [8, 12],
-      textStyle: { color: t.text, fontSize: 12 },
+      textStyle: { color: t.text, fontSize: mobile ? 13 : 12 },
       extraCssText: 'border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.18);',
       formatter: (p: { dataIndex: number }) => {
         const r = rows[p.dataIndex]
@@ -88,7 +93,13 @@ function barOption(rows: Row[], hidden: boolean): echarts.EChartsCoreOption {
         return `<div style="font-weight:600">${r.name}</div><div style="color:${t.faint};font-size:10px">${r.fullName}</div><div style="margin-top:4px;font-variant-numeric:tabular-nums;color:${r.pnl >= 0 ? t.pos : t.neg}">${pnl}</div>${px}`
       },
     },
-    grid: { left: 36, right: 76, top: 12, bottom: 12, containLabel: true },
+    grid: {
+      left: 36,
+      right: 76,
+      top: mobile ? 6 : 12,
+      bottom: mobile ? 6 : 12,
+      containLabel: true,
+    },
     xAxis: {
       type: 'value',
       axisLabel: { show: false },
@@ -102,7 +113,7 @@ function barOption(rows: Row[], hidden: boolean): echarts.EChartsCoreOption {
       data: rows.map((r) => r.name),
       axisLine: { show: false },
       axisTick: { show: false },
-      axisLabel: { color: t.muted, fontSize: 11, fontWeight: 500 },
+      axisLabel: { color: t.muted, fontSize: mobile ? 12 : 11, fontWeight: 500 },
     },
     series: [
       {
@@ -135,7 +146,7 @@ function barOption(rows: Row[], hidden: boolean): echarts.EChartsCoreOption {
         }),
         label: {
           show: true,
-          fontSize: 11,
+          fontSize: mobile ? 12 : 11,
           fontWeight: 500,
           color: t.muted,
           formatter: (p: { value: number }) =>
