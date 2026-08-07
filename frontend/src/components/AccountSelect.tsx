@@ -25,12 +25,12 @@ export function AccountSelect({ accounts, value, onChange, hidden }: Props) {
   const label = value === 'ALL' ? 'All accounts' : (current?.alias || current?.account_id || value)
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative min-w-0 flex-1 sm:flex-none">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex h-11 items-center gap-2 rounded-[10px] border border-border bg-surface px-3 text-[13px] font-medium text-text transition-colors hover:bg-surface-2 sm:h-9"
+        className="flex h-10 w-full min-w-0 items-center justify-between gap-1.5 rounded-[10px] border border-border bg-surface px-3 text-[13px] font-medium text-text transition-colors hover:bg-surface-2 min-[375px]:h-9 sm:w-auto sm:justify-start sm:gap-2"
       >
-        <span className="max-w-[140px] truncate">{label}</span>
+        <span className="min-w-0 truncate sm:max-w-[140px]">{label}</span>
         <svg className="h-3 w-3 text-faint" viewBox="0 0 12 12" fill="none">
           <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
         </svg>

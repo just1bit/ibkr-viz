@@ -33,7 +33,12 @@ function AppContent() {
   }
 
   if (user && (!user.has_flex_query || showSettings)) {
-    return <SetupPage onDone={() => setShowSettings(false)} />
+    return (
+      <SetupPage
+        mode={showSettings ? 'settings' : 'setup'}
+        onDone={showSettings ? () => setShowSettings(false) : undefined}
+      />
+    )
   }
 
   return <Dashboard user={user!} onLogout={logout} onSettings={() => setShowSettings(true)} />
@@ -74,7 +79,7 @@ function Dashboard({ user, onLogout, onSettings }: {
 
       <ConnectionBanner user={user} status={status} />
 
-      <main className="safe-bottom mx-auto max-w-7xl px-4 py-5 sm:px-6 sm:py-7">
+      <main className="safe-bottom mx-auto max-w-7xl px-4 py-4 sm:px-6 sm:py-7">
         {error ? (
           <ErrorState message={error} onRetry={reload} />
         ) : loading && !portfolio ? (

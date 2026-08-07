@@ -5,9 +5,21 @@ interface Props {
   user: UserProfile
   onLogout: () => void
   onSettings?: () => void
+  hidden?: boolean
+  onToggleHidden?: () => void
+  isDark?: boolean
+  onToggleTheme?: () => void
 }
 
-export function UserMenu({ user, onLogout, onSettings }: Props) {
+export function UserMenu({
+  user,
+  onLogout,
+  onSettings,
+  hidden,
+  onToggleHidden,
+  isDark,
+  onToggleTheme,
+}: Props) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -25,7 +37,7 @@ export function UserMenu({ user, onLogout, onSettings }: Props) {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex h-11 w-11 items-center justify-center rounded-full border border-border bg-surface text-[13px] font-semibold text-text transition-colors hover:bg-surface-2 sm:h-9 sm:w-9"
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border bg-surface text-[13px] font-semibold text-text transition-colors hover:bg-surface-2 min-[375px]:h-9 min-[375px]:w-9"
         title={user.email}
       >
         {initial}
@@ -38,6 +50,24 @@ export function UserMenu({ user, onLogout, onSettings }: Props) {
             <div className="truncate text-[11px] text-faint">{user.email}</div>
           </div>
           <div className="my-1 border-t border-border" />
+          {onToggleHidden && (
+            <button
+              onClick={() => { onToggleHidden(); setOpen(false) }}
+              className="flex min-h-11 w-full items-center justify-between rounded-[9px] px-3 py-2 text-left text-[13px] text-text transition-colors hover:bg-surface-2 min-[375px]:hidden"
+            >
+              <span>{hidden ? 'Show amounts' : 'Hide amounts'}</span>
+              <span className="text-[11px] text-faint">Privacy</span>
+            </button>
+          )}
+          {onToggleTheme && (
+            <button
+              onClick={() => { onToggleTheme(); setOpen(false) }}
+              className="flex min-h-11 w-full items-center justify-between rounded-[9px] px-3 py-2 text-left text-[13px] text-text transition-colors hover:bg-surface-2 min-[375px]:hidden"
+            >
+              <span>{isDark ? 'Use light theme' : 'Use dark theme'}</span>
+              <span className="text-[11px] text-faint">Appearance</span>
+            </button>
+          )}
           {onSettings && (
             <button
               onClick={() => { onSettings(); setOpen(false) }}
