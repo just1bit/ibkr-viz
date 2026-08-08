@@ -19,14 +19,24 @@ class FakeS3Error(Exception):
 
 
 class FakeS3Client:
-    def __init__(self, result=None, error=None):
+    def __init__(self, result=None, error=None, head_error=None):
         self.result = result
         self.error = error
+        self.head_error = head_error
+        self.put_calls = []
 
     def get_object(self, **_kwargs):
         if self.error:
             raise self.error
         return {'Body': io.BytesIO(self.result.encode('utf-8'))}
+
+    def head_object(self, **_kwargs):
+        if self.head_error:
+            raise self.head_error
+        return {}
+
+    def put_object(self, **kwargs):
+        self.put_calls.append(kwargs)
 
 
 class CaptureCursor:
@@ -72,6 +82,33 @@ class S3ReadTests(unittest.TestCase):
         self.assertEqual(
             '<xml/>', store.get_raw_xml('u1', '2026-08-05')
         )
+
+
+class S3WriteTests(unittest.TestCase):
+    def test_existing_canonical_xml_is_not_uploaded_again(self):
+        client = FakeS3Client()
+        store = make_store(client)
+
+        key, created = store.save_raw_xml_if_absent(
+            'u1', '2026-08-05', '<xml/>'
+        )
+
+        self.assertEqual('flex_raw/u1/2026-08-05.xml', key)
+        self.assertFalse(created)
+        self.assertEqual([], client.put_calls)
+
+    def test_missing_canonical_xml_is_uploaded_once(self):
+        client = FakeS3Client(
+            head_error=FakeS3Error('NoSuchKey', 404)
+        )
+        store = make_store(client)
+
+        _key, created = store.save_raw_xml_if_absent(
+            'u1', '2026-08-05', '<xml/>'
+        )
+
+        self.assertTrue(created)
+        self.assertEqual(1, len(client.put_calls))
 
 
 class SchedulerEligibilityTests(unittest.TestCase):

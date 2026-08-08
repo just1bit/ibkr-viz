@@ -54,6 +54,9 @@ def load_config():
         's3_access_key': '',
         's3_secret_key': '',
         's3_prefix': 'flex_raw/',
+        's3_connect_timeout': 3,
+        's3_read_timeout': 10,
+        's3_total_max_attempts': 3,
 
         # Durable local cache path. Override to /home/data/flex_cache on Azure.
         'flex_cache_dir': os.path.join(BASE_DIR, 'flex_cache'),
@@ -307,6 +310,34 @@ def _write_cache(user_id, xml_text):
         f.write(xml_text)
 
 
+def _archive_xml_in_background(user_id, report_date, xml_text, *, trigger):
+    """Ensure the canonical archive exists without delaying a refresh."""
+    if not s3_store.enabled:
+        return
+
+    def archive():
+        try:
+            key, created = s3_store.save_raw_xml_if_absent(
+                user_id, report_date, xml_text
+            )
+            logger.info(
+                'Canonical Flex XML %s user=%s trigger=%s report_date=%s key=%s',
+                'archived' if created else 'already present',
+                user_id, trigger, report_date, key,
+            )
+        except Exception as e:
+            _safe_log_warning(
+                user_id, 'CANONICAL_WRITE', str(e), report_date,
+                trigger=trigger, source='canonical',
+            )
+
+    threading.Thread(
+        target=archive,
+        name=f'flex-archive-{user_id}',
+        daemon=True,
+    ).start()
+
+
 def _accounts_from_data(data):
     return [
         {
@@ -451,9 +482,9 @@ def _ingest_cached_xml(user_id, expected, xml_text, source, trigger):
 
     accounts = _accounts_from_data(data)
 
-    # Keep both reusable layers populated before database work. If the DB
-    # transaction fails, a later automatic/manual attempt can retry locally
-    # without asking IBKR to regenerate the report.
+    # Restore the fast local layer when canonical storage was the source.
+    # The database is deliberately updated before any canonical upload: a
+    # slow object store must not hold a user-visible refresh open.
     if source == 'canonical':
         try:
             _write_cache(user_id, xml_text)
@@ -467,28 +498,15 @@ def _ingest_cached_xml(user_id, expected, xml_text, source, trigger):
                 user_id, 'LOCAL_CACHE_WRITE', str(e), report_date,
                 trigger=trigger, source=source,
             )
-    else:
-        try:
-            canonical_key = s3_store.save_raw_xml(
-                user_id, report_date, xml_text
-            )
-            if canonical_key:
-                logger.info(
-                    'Flex cache restored user=%s trigger=%s from=local '
-                    'to=canonical report_date=%s key=%s',
-                    user_id, trigger, report_date, canonical_key,
-                )
-        except Exception as e:
-            _safe_log_warning(
-                user_id, 'CANONICAL_WRITE', str(e), report_date,
-                trigger=trigger, source=source,
-            )
-
     err = _store_parsed_data(
         user_id, data, report_date, source=source, trigger=trigger
     )
     if err:
         return None, False, err, accounts
+    if source == 'local':
+        _archive_xml_in_background(
+            user_id, report_date, xml_text, trigger=trigger
+        )
     return report_date, True, None, accounts
 
 
@@ -766,32 +784,18 @@ def _fetch_and_store_unlocked(user_id, *, force=False, trigger='automatic'):
     report_date = data['date']
     accounts = _accounts_from_data(data)
 
-    # Archive the canonical, actual report date before database work so a DB
-    # failure can be recovered without asking IBKR to regenerate the report.
-    try:
-        canonical_key = s3_store.save_raw_xml(
-            user_id, report_date, xml_text
-        )
-        if canonical_key:
-            logger.info(
-                'Canonical Flex XML archived user=%s trigger=%s '
-                'report_date=%s key=%s',
-                user_id, trigger, report_date, canonical_key,
-            )
-    except Exception as e:
-        _safe_log_warning(
-            user_id, 'CANONICAL_WRITE', str(e), report_date,
-            int((time.time() - t0) * 1000),
-            trigger=trigger, source='ibkr',
-        )
-
-    # Store to DB
+    # The Flex client has already persisted the XML locally. Commit portfolio
+    # data first, then archive canonically without extending request latency.
     err = _store_parsed_data(
         user_id, data, report_date, source='ibkr', trigger=trigger,
         duration_ms=int((time.time() - t0) * 1000),
     )
     if err:
         return None, False, err, accounts
+
+    _archive_xml_in_background(
+        user_id, report_date, xml_text, trigger=trigger
+    )
 
     return report_date, True, None, accounts
 
@@ -1429,29 +1433,107 @@ def trigger_refresh():
         }), 429
 
     storage.set_user_manual_at(conn, user_id, now_ts)
-    logger.info('Manual Flex refresh accepted user=%s', user_id)
-
-    new_date, is_new, error, _accounts = fetch_and_store(
-        user_id, force=True, trigger='manual'
+    job_id = storage.create_refresh_job(conn, user_id)
+    logger.info(
+        'Manual Flex refresh accepted user=%s job_id=%s', user_id, job_id
     )
-    if error:
-        current_user = storage.get_user_by_id(conn, user_id)
-        return jsonify({
-            'error': error,
-            'flex_status': current_user['flex_status'],
-            'retry_after_seconds': cooldown,
-        }), 502
-    if is_new:
-        message = f'New report stored: {new_date}'
-    elif new_date:
-        message = f'Already up to date — latest report is {new_date}'
-    else:
-        message = 'No report available yet'
+
+    worker = threading.Thread(
+        target=_run_manual_refresh_job,
+        args=(user_id, job_id),
+        name=f'manual-refresh-{user_id}',
+        daemon=True,
+    )
+    try:
+        worker.start()
+    except Exception as e:
+        storage.update_refresh_job(
+            conn, user_id, job_id, 'refresh_error', str(e)
+        )
+        return jsonify({'error': f'Unable to start refresh: {e}'}), 500
+
     return jsonify({
-        'status': 'ok',
-        'date': new_date,
-        'message': message
-    })
+        'status': 'accepted',
+        'job_id': job_id,
+        'message': 'Refresh started',
+    }), 202
+
+
+def _run_manual_refresh_job(user_id, job_id):
+    """Execute one manual refresh outside the request lifecycle."""
+    conn = None
+    try:
+        conn = get_db()
+        storage.update_refresh_job(
+            conn, user_id, job_id, 'refresh_running',
+            'Checking database and report caches',
+        )
+    finally:
+        if conn is not None:
+            return_db(conn)
+
+    try:
+        new_date, is_new, error, _accounts = fetch_and_store(
+            user_id, force=True, trigger='manual'
+        )
+        if error:
+            status = 'refresh_error'
+            message = error
+        elif is_new:
+            status = 'refresh_success'
+            message = f'New report stored: {new_date}'
+        elif new_date:
+            status = 'refresh_success'
+            message = f'Already up to date — latest report is {new_date}'
+        else:
+            status = 'refresh_success'
+            message = 'No report available yet'
+    except Exception as e:
+        logger.exception(
+            'Manual refresh job crashed user=%s job_id=%s', user_id, job_id
+        )
+        status = 'refresh_error'
+        message = f'Refresh failed unexpectedly: {e}'
+        new_date = None
+
+    conn = None
+    try:
+        conn = get_db()
+        storage.update_refresh_job(
+            conn, user_id, job_id, status, message, new_date
+        )
+    finally:
+        if conn is not None:
+            return_db(conn)
+
+
+@app.route('/api/refresh-status/<int:job_id>')
+@login_required
+def refresh_job_status(job_id):
+    conn = get_db_g()
+    job = storage.get_refresh_job(conn, g.user_id, job_id)
+    if not job:
+        return jsonify({'error': 'Refresh job not found'}), 404
+
+    status = job['status']
+    if status in ('refresh_pending', 'refresh_running'):
+        return jsonify({
+            'status': 'running',
+            'message': job['error_detail'] or 'Refresh is running',
+        })
+    if status == 'refresh_success':
+        return jsonify({
+            'status': 'success',
+            'date': job['report_date'],
+            'message': job['error_detail'] or 'Refresh completed',
+        })
+    if status == 'refresh_error':
+        return jsonify({
+            'status': 'error',
+            'message': job['error_detail'] or 'Refresh failed',
+            'retry_after_seconds': config['refresh_cooldown'],
+        })
+    return jsonify({'error': 'Invalid refresh job state'}), 500
 
 
 @app.route('/api/status')
@@ -1472,6 +1554,7 @@ def get_status():
     c = conn.cursor()
     c.execute('''SELECT status, error_code, error_detail, created_at
                  FROM fetch_log WHERE user_id = ?
+                   AND status IN ('success', 'warning', 'error')
                  ORDER BY id DESC LIMIT 1''', (user_id,))
     latest_attempt = c.fetchone()
 

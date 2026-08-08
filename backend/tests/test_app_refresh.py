@@ -36,53 +36,73 @@ class ManualRefreshTests(unittest.TestCase):
     def setUp(self):
         backend_app.app.config['TESTING'] = True
 
+    @mock.patch.object(backend_app.threading, 'Thread')
+    @mock.patch.object(backend_app.storage, 'create_refresh_job', return_value=42)
     @mock.patch.object(backend_app.storage, 'set_user_manual_at')
     @mock.patch.object(backend_app.storage, 'get_user_by_id')
     @mock.patch.object(backend_app, 'get_db_g')
-    @mock.patch.object(backend_app, 'fetch_and_store')
-    def test_manual_refresh_forces_the_refresh_pipeline(
-        self, fetch_and_store, get_db_g, get_user_by_id, set_manual_at
+    def test_manual_refresh_starts_an_async_job(
+        self, get_db_g, get_user_by_id, set_manual_at, create_job, thread
     ):
         get_db_g.return_value = FakeConnection()
         get_user_by_id.return_value = {
             'last_manual_at': 0,
             'flex_status': 'healthy',
         }
-        fetch_and_store.return_value = ('2026-08-05', True, None, [])
-
-        with backend_app.app.test_request_context('/api/trigger-refresh', method='POST'):
-            backend_app.g.user_id = 'u1'
-            response = backend_app.trigger_refresh.__wrapped__()
-
-        fetch_and_store.assert_called_once_with(
-            'u1', force=True, trigger='manual'
-        )
-        set_manual_at.assert_called_once()
-        self.assertEqual('New report stored: 2026-08-05', response.get_json()['message'])
-
-    @mock.patch.object(backend_app.storage, 'set_user_manual_at')
-    @mock.patch.object(backend_app.storage, 'get_user_by_id')
-    @mock.patch.object(backend_app, 'get_db_g')
-    @mock.patch.object(backend_app, 'fetch_and_store')
-    def test_manual_refresh_returns_the_real_failure(
-        self, fetch_and_store, get_db_g, get_user_by_id, _set_manual_at
-    ):
-        get_db_g.return_value = FakeConnection()
-        get_user_by_id.side_effect = [
-            {'last_manual_at': 0, 'flex_status': 'healthy'},
-            {'last_manual_at': 0, 'flex_status': 'error'},
-        ]
-        fetch_and_store.return_value = (
-            None, False, 'IBKR fetch failed: temporary failure', None
-        )
 
         with backend_app.app.test_request_context('/api/trigger-refresh', method='POST'):
             backend_app.g.user_id = 'u1'
             response, status = backend_app.trigger_refresh.__wrapped__()
 
-        self.assertEqual(502, status)
+        self.assertEqual(202, status)
+        self.assertEqual(42, response.get_json()['job_id'])
+        set_manual_at.assert_called_once()
+        create_job.assert_called_once_with(get_db_g.return_value, 'u1')
+        thread.return_value.start.assert_called_once()
+
+    @mock.patch.object(backend_app.storage, 'update_refresh_job')
+    @mock.patch.object(backend_app, 'return_db')
+    @mock.patch.object(backend_app, 'get_db', return_value=FakeConnection())
+    @mock.patch.object(backend_app, 'fetch_and_store')
+    def test_manual_refresh_job_records_the_real_failure(
+        self, fetch_and_store, _get_db, _return_db, update_job
+    ):
+        fetch_and_store.return_value = (
+            None, False, 'IBKR fetch failed: temporary failure', None
+        )
+
+        backend_app._run_manual_refresh_job('u1', 42)
+
+        fetch_and_store.assert_called_once_with(
+            'u1', force=True, trigger='manual'
+        )
         self.assertEqual(
-            'IBKR fetch failed: temporary failure', response.get_json()['error']
+            mock.call(
+                mock.ANY, 'u1', 42, 'refresh_error',
+                'IBKR fetch failed: temporary failure', None,
+            ),
+            update_job.call_args_list[-1],
+        )
+
+    @mock.patch.object(backend_app.storage, 'get_refresh_job')
+    @mock.patch.object(backend_app, 'get_db_g', return_value=FakeConnection())
+    def test_manual_refresh_job_status_returns_completed_message(
+        self, _get_db, get_job
+    ):
+        get_job.return_value = {
+            'status': 'refresh_success',
+            'report_date': '2026-08-07',
+            'error_detail': 'New report stored: 2026-08-07',
+        }
+
+        with backend_app.app.test_request_context('/api/refresh-status/42'):
+            backend_app.g.user_id = 'u1'
+            response = backend_app.refresh_job_status.__wrapped__(42)
+
+        self.assertEqual('success', response.get_json()['status'])
+        self.assertEqual(
+            'New report stored: 2026-08-07',
+            response.get_json()['message'],
         )
 
 
@@ -113,23 +133,26 @@ class CacheWallTests(unittest.TestCase):
         write_cache.assert_called_once_with('u1', '<r2/>')
         read_cache.assert_called_once_with('u1')
 
+    @mock.patch.object(backend_app, '_archive_xml_in_background')
     @mock.patch.object(backend_app, '_store_parsed_data', return_value=None)
-    @mock.patch.object(
-        backend_app.s3_store, 'save_raw_xml',
-        return_value='flex_raw/u1/2026-08-05.xml',
-    )
     @mock.patch.object(backend_app.flex_parser, 'parse_flex_xml')
     @mock.patch.object(backend_app, '_read_cache', return_value='<local/>')
     @mock.patch.object(backend_app.s3_store, 'get_raw_xml', return_value=None)
-    def test_local_hit_restores_canonical_archive(
-        self, _get_raw_xml, _read_cache, parse_xml, save_raw_xml, _store
+    def test_local_hit_stores_before_scheduling_canonical_archive(
+        self, _get_raw_xml, _read_cache, parse_xml, store_data, archive
     ):
         parse_xml.return_value = self.data
+        calls = mock.Mock()
+        calls.attach_mock(store_data, 'store')
+        calls.attach_mock(archive, 'archive')
 
         result = backend_app._recover_cached_report('u1', '2026-08-05')
 
         self.assertEqual(('2026-08-05', True, None), result[:3])
-        save_raw_xml.assert_called_once_with('u1', '2026-08-05', '<local/>')
+        self.assertEqual(['store', 'archive'], [c[0] for c in calls.mock_calls])
+        archive.assert_called_once_with(
+            'u1', '2026-08-05', '<local/>', trigger='unknown'
+        )
         _get_raw_xml.assert_not_called()
 
     @mock.patch.object(backend_app.flex_client, 'get_flex_xml')

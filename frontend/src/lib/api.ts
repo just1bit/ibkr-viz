@@ -5,6 +5,13 @@ export type RefreshResult =
   | { rateLimited: false; failed: true; retryAfter: number; message: string }
   | { rateLimited: false; failed: false; date: string | null; message: string }
 
+type RefreshJobStatus = {
+  status: 'running' | 'success' | 'error'
+  date?: string | null
+  message: string
+  retry_after_seconds?: number
+}
+
 async function getJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(url, { signal, cache: 'no-store' })
   if (!res.ok) {
@@ -50,9 +57,11 @@ export const api = {
 
   status: (signal?: AbortSignal) => getJSON<Status>('/api/status', signal),
 
-  triggerRefresh: async (): Promise<RefreshResult> => {
+  triggerRefresh: async (
+    onProgress?: (message: string) => void,
+  ): Promise<RefreshResult> => {
     const controller = new AbortController()
-    const timeout = window.setTimeout(() => controller.abort(), 75_000)
+    const timeout = window.setTimeout(() => controller.abort(), 120_000)
     try {
       const res = await fetch('/api/trigger-refresh', {
         method: 'POST',
@@ -75,19 +84,55 @@ export const api = {
           message: data.error || 'Refresh failed',
         }
       }
-      return {
-        rateLimited: false,
-        failed: false,
-        date: data.date ?? null,
-        message: data.message || 'Refresh completed.',
+
+      const jobId = Number(data.job_id)
+      if (!Number.isFinite(jobId)) {
+        throw new Error('Refresh started without a valid job id.')
+      }
+      onProgress?.(data.message || 'Refresh started')
+
+      while (true) {
+        await wait(1_000)
+        const statusRes = await fetch(`/api/refresh-status/${jobId}`, {
+          cache: 'no-store',
+          signal: controller.signal,
+        })
+        const job = await statusRes.json() as RefreshJobStatus & { error?: string }
+        if (!statusRes.ok) {
+          throw new Error(job.error || `Refresh status failed (${statusRes.status})`)
+        }
+        if (job.status === 'running') {
+          onProgress?.(job.message || 'Refresh is running')
+          continue
+        }
+        if (job.status === 'error') {
+          return {
+            rateLimited: false,
+            failed: true,
+            retryAfter: Number(job.retry_after_seconds || 0),
+            message: job.message || 'Refresh failed',
+          }
+        }
+        return {
+          rateLimited: false,
+          failed: false,
+          date: job.date ?? null,
+          message: job.message || 'Refresh completed.',
+        }
       }
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
-        throw new Error('Refresh timed out. The server may still be processing the report.')
+        throw new Error(
+          'Refresh is still processing after 120 seconds. The server will continue in the background.',
+        )
       }
       throw err
     } finally {
       window.clearTimeout(timeout)
     }
   },
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
 }

@@ -33,6 +33,9 @@ s3_region: "auto"
 s3_access_key: ""
 s3_secret_key: ""
 s3_prefix: "flex_raw/"
+s3_connect_timeout: 3      # seconds per object-store connection attempt
+s3_read_timeout: 10        # seconds per object-store response attempt
+s3_total_max_attempts: 3   # initial request plus bounded retries
 # Override only when the default project-local cache is unsuitable.
 # flex_cache_dir: "/home/data/flex_cache"  # recommended for Azure App Service
 

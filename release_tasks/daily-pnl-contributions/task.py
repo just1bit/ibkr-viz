@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 
 import boto3
+from botocore.config import Config
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -46,6 +47,16 @@ def create_s3_client():
         endpoint_url=os.environ.get('S3_ENDPOINT', '').strip() or None,
         aws_access_key_id=os.environ.get('S3_ACCESS_KEY', '').strip() or None,
         aws_secret_access_key=os.environ.get('S3_SECRET_KEY', '').strip() or None,
+        config=Config(
+            connect_timeout=int(os.environ.get('S3_CONNECT_TIMEOUT', '3')),
+            read_timeout=int(os.environ.get('S3_READ_TIMEOUT', '10')),
+            retries={
+                'mode': 'standard',
+                'total_max_attempts': int(
+                    os.environ.get('S3_TOTAL_MAX_ATTEMPTS', '3')
+                ),
+            },
+        ),
     )
 
 
