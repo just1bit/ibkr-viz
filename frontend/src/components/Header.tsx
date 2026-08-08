@@ -93,9 +93,11 @@ export function Header({
 
   async function refresh() {
     setBusy(true)
-    showFeedback('info', 'Requesting the latest report from IBKR…')
+    showFeedback('info', 'Starting portfolio refresh…')
     try {
-      const r = await api.triggerRefresh()
+      const r = await api.triggerRefresh((message) => {
+        showFeedback('info', message)
+      })
       if (r.rateLimited) {
         startCooldown(r.retryAfter)
         showFeedback('info', r.message, 5_000)
@@ -108,7 +110,11 @@ export function Header({
         showFeedback('success', r.message, 5_000)
       }
     } catch (err) {
-      showFeedback('error', (err as Error).message, 10_000)
+      const message = (err as Error).message
+      if (message.includes('still processing after 120 seconds')) {
+        startCooldown(600)
+      }
+      showFeedback('error', message, 10_000)
     } finally {
       setBusy(false)
     }

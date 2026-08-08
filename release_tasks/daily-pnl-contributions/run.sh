@@ -20,7 +20,7 @@ if [[ -z "${POSTGRES_URL:-}" || -z "${S3_BUCKET:-}" ]]; then
       printf '%s' "$setting_name" | tr '[:lower:]' '[:upper:]'
     )"
     case "$normalized_name" in
-      POSTGRES_URL|S3_BUCKET|S3_ENDPOINT|S3_REGION|S3_ACCESS_KEY|S3_SECRET_KEY|S3_PREFIX)
+      POSTGRES_URL|S3_BUCKET|S3_ENDPOINT|S3_REGION|S3_ACCESS_KEY|S3_SECRET_KEY|S3_PREFIX|S3_CONNECT_TIMEOUT|S3_READ_TIMEOUT|S3_TOTAL_MAX_ATTEMPTS)
         export "$normalized_name=$setting_value"
         ;;
     esac

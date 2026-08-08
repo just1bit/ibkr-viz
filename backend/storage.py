@@ -306,6 +306,37 @@ def count_consecutive_failures(conn, user_id: str) -> int:
     return count
 
 
+def create_refresh_job(conn, user_id: str) -> int:
+    """Create a durable manual-refresh job record and return its id."""
+    c = conn.cursor()
+    c.execute('''INSERT INTO fetch_log
+        (user_id, status, created_at)
+        VALUES (?, 'refresh_pending', ?) RETURNING id''',
+        (user_id, _utc_now()))
+    job_id = c.fetchone()['id']
+    conn.commit()
+    return job_id
+
+
+def update_refresh_job(conn, user_id: str, job_id: int, status: str,
+                       message: str = None, report_date: str = None):
+    """Update one user-owned async refresh job."""
+    c = conn.cursor()
+    c.execute('''UPDATE fetch_log
+                 SET status = ?, error_detail = ?, report_date = ?
+                 WHERE id = ? AND user_id = ?''',
+              (status, message, report_date, job_id, user_id))
+    conn.commit()
+
+
+def get_refresh_job(conn, user_id: str, job_id: int):
+    c = conn.cursor()
+    c.execute('''SELECT id, status, error_detail, report_date, created_at
+                 FROM fetch_log WHERE id = ? AND user_id = ?''',
+              (job_id, user_id))
+    return c.fetchone()
+
+
 # ---------------------------------------------------------------------------
 # S3 raw XML store
 # ---------------------------------------------------------------------------
@@ -321,12 +352,23 @@ class S3Store:
         if not self.enabled:
             return
         import boto3
+        from botocore.config import Config
         self.client = boto3.client(
             's3',
             region_name=config.get('s3_region', 'us-east-1'),
             endpoint_url=config.get('s3_endpoint') or None,
             aws_access_key_id=config.get('s3_access_key') or None,
             aws_secret_access_key=config.get('s3_secret_key') or None,
+            config=Config(
+                connect_timeout=config.get('s3_connect_timeout', 3),
+                read_timeout=config.get('s3_read_timeout', 10),
+                retries={
+                    'mode': 'standard',
+                    'total_max_attempts': config.get(
+                        's3_total_max_attempts', 3
+                    ),
+                },
+            ),
         )
         self.bucket = config['s3_bucket']
         self.prefix = config.get('s3_prefix', 'flex_raw/')
@@ -348,6 +390,40 @@ class S3Store:
         self._put_xml(key, xml_text)
         return key
 
+    @staticmethod
+    def _is_not_found(error):
+        response = getattr(error, 'response', {}) or {}
+        detail = response.get('Error', {}) or {}
+        code = str(detail.get('Code', ''))
+        status = (response.get('ResponseMetadata', {}) or {}).get(
+            'HTTPStatusCode'
+        )
+        return code in ('NoSuchKey', 'NotFound', '404') or status == 404
+
+    def raw_xml_exists(self, user_id, date_str):
+        if not self.enabled:
+            return False
+        key = self._key(user_id, date_str)
+        try:
+            self.client.head_object(Bucket=self.bucket, Key=key)
+            return True
+        except Exception as e:
+            if self._is_not_found(e):
+                return False
+            raise ObjectStoreReadError(
+                f'Unable to inspect canonical object {key}: {e}'
+            ) from e
+
+    def save_raw_xml_if_absent(self, user_id, date_str, xml_text):
+        """Return ``(key, created)`` without overwriting an existing XML."""
+        if not self.enabled:
+            return None, False
+        key = self._key(user_id, date_str)
+        if self.raw_xml_exists(user_id, date_str):
+            return key, False
+        self._put_xml(key, xml_text)
+        return key, True
+
     def get_raw_xml(self, user_id, date_str):
         if not self.enabled:
             return None
@@ -356,13 +432,7 @@ class S3Store:
             resp = self.client.get_object(Bucket=self.bucket, Key=key)
             return resp['Body'].read().decode('utf-8')
         except Exception as e:
-            response = getattr(e, 'response', {}) or {}
-            error = response.get('Error', {}) or {}
-            code = str(error.get('Code', ''))
-            status = (response.get('ResponseMetadata', {}) or {}).get(
-                'HTTPStatusCode'
-            )
-            if code in ('NoSuchKey', 'NotFound', '404') or status == 404:
+            if self._is_not_found(e):
                 return None
             raise ObjectStoreReadError(
                 f'Unable to read canonical object {key}: {e}'

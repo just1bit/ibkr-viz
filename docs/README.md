@@ -60,7 +60,7 @@ flowchart TD
     PARSER --> ARCHIVE[("Local XML and S3/R2 archive")]
 ```
 
-`fetch_and_store` serves credential tests, manual refreshes and scheduled refreshes. It checks PostgreSQL, local XML and S3/R2, parses Flex data and stores report snapshots. Market-timezone scheduling and per-user locking coordinate hourly updates.
+`fetch_and_store` serves credential tests, asynchronous manual refresh jobs and scheduled refreshes. It checks PostgreSQL, local XML and S3/R2, parses Flex data and stores report snapshots. Canonical XML archival runs after the database commit in a bounded background operation and skips objects already present. Market-timezone scheduling and per-user locking coordinate hourly updates.
 
 ## Data model
 

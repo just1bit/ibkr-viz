@@ -19,9 +19,10 @@ IBKR Portfolio Viz turns each user's latest Interactive Brokers Flex statement i
 
 ### Refresh
 
-- `fetch_and_store` serves credential tests, manual refreshes and the hourly scheduler.
+- `fetch_and_store` serves credential tests, asynchronous manual refresh jobs and the hourly scheduler.
 - Refreshes check PostgreSQL, local XML and canonical S3/R2 storage in sequence, then request IBKR Flex data.
 - Parsed reports update PostgreSQL, local cache and canonical report-date archives.
+- User-facing refresh completion does not wait for canonical archival; the archive worker uses bounded object-store timeouts and does not overwrite an existing report-date object.
 - Market-timezone scheduling, expanding refresh intervals and per-user serialization coordinate updates.
 
 ## Flex data contract
