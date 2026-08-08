@@ -33,6 +33,26 @@ POSITION_INSERT_SQL = (
     f"VALUES ({', '.join('?' for _ in POSITION_COLUMNS)})"
 )
 
+DAILY_PNL_CONTRIBUTION_COLUMNS = (
+    'user_id',
+    'date',
+    'account_id',
+    'conid',
+    'ticker',
+    'full_name',
+    'asset_class',
+    'day_pnl',
+    'prev_close_price',
+    'prev_close_quantity',
+    'currency',
+)
+
+DAILY_PNL_CONTRIBUTION_INSERT_SQL = (
+    'INSERT INTO daily_pnl_contributions '
+    f"({', '.join(DAILY_PNL_CONTRIBUTION_COLUMNS)}) "
+    f"VALUES ({', '.join('?' for _ in DAILY_PNL_CONTRIBUTION_COLUMNS)})"
+)
+
 
 def position_values(user_id, report_date, account_id, holding):
     """Return values in exactly the same order as POSITION_COLUMNS."""
@@ -62,4 +82,22 @@ def position_values(user_id, report_date, account_id, holding):
         holding['underlying_symbol'],
         holding['listing_exchange'],
         holding['currency'],
+    )
+
+
+def daily_pnl_contribution_values(user_id, report_date, account_id,
+                                  contribution):
+    """Return values in DAILY_PNL_CONTRIBUTION_COLUMNS order."""
+    return (
+        user_id,
+        report_date,
+        account_id,
+        contribution['conid'],
+        contribution['ticker'],
+        contribution['full_name'],
+        contribution['asset_class'],
+        contribution['day_pnl'],
+        contribution['prev_close_price'],
+        contribution['prev_close_quantity'],
+        contribution['currency'],
     )

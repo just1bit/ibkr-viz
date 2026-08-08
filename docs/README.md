@@ -70,6 +70,7 @@ flowchart TD
 | `sessions` | Server-side session validation records |
 | `accounts` | Latest per-account NAV components and account metadata |
 | `positions` | User/account/report-date position snapshots |
+| `daily_pnl_contributions` | Non-zero named daily MTM contributions, including fully closed intraday trades |
 | `targets` | Per-user, per-account ticker target weights |
 | `fetch_log` | Refresh history |
 
@@ -78,6 +79,11 @@ All application queries scope portfolio data by `user_id`. Private API and auth 
 ## Deployment and stack
 
 Pushes to `main` build the React app and deploy the backend, frontend bundle and Python requirements to the configured Azure Web App. Pull requests run the frontend build, Python compilation, shell syntax checks and the configured Copilot review gate.
+
+Run the `daily-pnl-contributions` release task once with this release to create
+its table and backfill existing snapshots from the canonical raw XML archive.
+The dashboard retains its previous position-based view as a rolling-deploy
+fallback until the task completes.
 
 React 18, TypeScript, Tailwind CSS 4, ECharts 5, Flask, APScheduler, gunicorn, PostgreSQL, S3-compatible object storage and Fernet encryption.
 

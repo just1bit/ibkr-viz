@@ -93,7 +93,29 @@ CREATE INDEX IF NOT EXISTS idx_positions_date ON positions(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_positions_account ON positions(user_id, account_id, date);
 
 -- ---------------------------------------------------------------------------
--- 5. targets — per-user per-account target allocation weights
+-- 5. daily_pnl_contributions — all named MTM rows, including closed trades
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS daily_pnl_contributions (
+    user_id            TEXT NOT NULL REFERENCES users(user_id),
+    date               TEXT NOT NULL,
+    account_id         TEXT NOT NULL,
+    conid              TEXT NOT NULL DEFAULT '',
+    ticker             TEXT NOT NULL,
+    full_name          TEXT,
+    asset_class        TEXT,
+    day_pnl            DOUBLE PRECISION,
+    prev_close_price   DOUBLE PRECISION,
+    prev_close_quantity DOUBLE PRECISION,
+    currency           TEXT DEFAULT 'USD',
+    PRIMARY KEY (user_id, date, account_id, conid, ticker)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_pnl_contributions_date
+    ON daily_pnl_contributions(user_id, date);
+CREATE INDEX IF NOT EXISTS idx_daily_pnl_contributions_account
+    ON daily_pnl_contributions(user_id, account_id, date);
+
+-- ---------------------------------------------------------------------------
+-- 6. targets — per-user per-account target allocation weights
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS targets (
     user_id    TEXT NOT NULL REFERENCES users(user_id),
@@ -104,7 +126,7 @@ CREATE TABLE IF NOT EXISTS targets (
 );
 
 -- ---------------------------------------------------------------------------
--- 6. fetch_log — data refresh audit trail
+-- 7. fetch_log — data refresh audit trail
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS fetch_log (
     id           SERIAL PRIMARY KEY,

@@ -11,8 +11,8 @@ native statement fields rather than being reconstructed from other values.
           │     └── EquitySummaryByReportDateInBase  → NAV components (stock,
           │                                            options, cash, accruals)
           ├── MTMPerformanceSummaryInBase
-          │     └── MTMPerformanceSummaryUnderlying  → day P&L (account + per
-          │                                            position), prev close
+          │     └── MTMPerformanceSummaryUnderlying  → account total + every
+          │                                            instrument's P&L contribution
           └── OpenPositions
                 └── OpenPosition                     → holdings (incl. option
                                                        contract terms)
@@ -76,6 +76,10 @@ def parse_flex_xml(xml_text: str) -> Dict:
             'net_liquidation', 'cash_balance', 'stock_value', 'options_value',
             'dividend_accruals', 'interest_accruals', 'previous_net_liquidation',
             'day_pnl',
+            'day_pnl_contributions': [{
+                'conid', 'ticker', 'full_name', 'asset_class', 'day_pnl',
+                'prev_close_price', 'prev_close_quantity', 'currency'
+            }],
             'holdings': [{
                 'conid', 'ticker', 'full_name', 'asset_class', 'side',
                 'quantity', 'market_value', 'mark_price',
@@ -108,17 +112,36 @@ def parse_flex_xml(xml_text: str) -> Dict:
         previous_es = es_rows[-2] if len(es_rows) > 1 else None
 
         # --- Day P&L from MTM performance: the blank-symbol row is the
-        #     account total IBKR reports directly; named rows are per
-        #     position, joined to holdings below by conid ---
+        #     account total IBKR reports directly. Keep every named row as a
+        #     contribution in its own right: an intraday trade can contribute
+        #     P&L without appearing in the end-of-day OpenPositions snapshot.
+        #     Open positions still receive their matching MTM fields below.
         day_pnl = 0.0
         mtm_by_conid = {}
+        day_pnl_contributions = []
         for row in stmt.find('MTMPerformanceSummaryInBase'):
-            if (row.get('symbol') or '').strip():
-                mtm_by_conid[row.get('conid', '')] = {
+            ticker = (row.get('symbol') or '').strip()
+            if ticker:
+                contribution = {
+                    'conid': row.get('conid', ''),
+                    'ticker': ticker,
+                    'full_name': row.get('description', ''),
+                    'asset_class': _asset_class(
+                        row.get('assetCategory', ''),
+                        row.get('subCategory', ''),
+                    ),
                     'day_pnl': round(_num(row, 'total'), 2),
                     'prev_close_price': _num(row, 'prevClosePrice'),
                     'prev_close_quantity': _num(row, 'prevCloseQuantity'),
+                    'currency': row.get('currency', 'USD'),
                 }
+                # The chart is an attribution view. Rows that round to no
+                # monetary contribution add noise without affecting its sum.
+                if contribution['day_pnl'] != 0:
+                    day_pnl_contributions.append(contribution)
+                conid = contribution['conid']
+                if conid:
+                    mtm_by_conid[conid] = contribution
             else:
                 day_pnl = round(_num(row, 'total'), 2)
 
@@ -171,6 +194,7 @@ def parse_flex_xml(xml_text: str) -> Dict:
                 if previous_es is not None else None
             ),
             'day_pnl': day_pnl,
+            'day_pnl_contributions': day_pnl_contributions,
             'holdings': holdings,
         })
 

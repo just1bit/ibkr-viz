@@ -56,6 +56,19 @@ export interface PortfolioSummary {
   total_day_pnl: number
 }
 
+export interface DailyPnlContribution {
+  conid: string
+  ticker: string
+  full_name: string
+  asset_class: string
+  day_pnl: number
+  prev_close_price: number | null
+  prev_close_quantity: number | null
+  currency: string
+  account_id: string
+  mark_price: number | null
+}
+
 /** NAV decomposition straight from EquitySummaryInBase. */
 export interface EquityComponents {
   stock: number
@@ -72,6 +85,7 @@ export interface Portfolio {
   accounts: string[]
   aliases: Record<string, string>
   holdings: Holding[]
+  daily_pnl_contributions: DailyPnlContribution[]
   summary: PortfolioSummary
   equity: EquityComponents
   asset_class_summary: AllocationSlice[]
