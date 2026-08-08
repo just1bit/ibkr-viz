@@ -44,6 +44,30 @@ class ReportSqlTests(unittest.TestCase):
             report_sql.POSITION_INSERT_SQL.count('?'),
         )
 
+    def test_daily_pnl_contribution_insert_shape_is_kept_in_sync(self):
+        contribution = {
+            'conid': '2',
+            'ticker': 'CLOSED',
+            'full_name': 'Closed Intraday Trade',
+            'asset_class': 'STOCK',
+            'day_pnl': 12.34,
+            'prev_close_price': 10.0,
+            'prev_close_quantity': 0.0,
+            'currency': 'USD',
+        }
+
+        values = report_sql.daily_pnl_contribution_values(
+            'u1', '2026-08-05', 'a1', contribution
+        )
+
+        self.assertEqual(
+            len(report_sql.DAILY_PNL_CONTRIBUTION_COLUMNS), len(values)
+        )
+        self.assertEqual(
+            len(report_sql.DAILY_PNL_CONTRIBUTION_COLUMNS),
+            report_sql.DAILY_PNL_CONTRIBUTION_INSERT_SQL.count('?'),
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

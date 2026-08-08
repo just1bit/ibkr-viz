@@ -274,6 +274,14 @@ def store_report(conn, user_id, data, report_date):
                 report_sql.position_values(user_id, report_date, aid, h),
             )
 
+        for contribution in acc.get('day_pnl_contributions', []):
+            c.execute(
+                report_sql.DAILY_PNL_CONTRIBUTION_INSERT_SQL,
+                report_sql.daily_pnl_contribution_values(
+                    user_id, report_date, aid, contribution
+                ),
+            )
+
 # ---------------------------------------------------------------------------
 # XML local cache (single latest file per user)
 # ---------------------------------------------------------------------------
@@ -907,6 +915,22 @@ def build_holding(row):
     }
 
 
+def build_daily_pnl_contribution(row, mark_price=None):
+    """Map a stored named MTM row to its API representation."""
+    return {
+        'conid': row['conid'],
+        'ticker': row['ticker'],
+        'full_name': row['full_name'],
+        'asset_class': row['asset_class'],
+        'day_pnl': row['day_pnl'],
+        'prev_close_price': row['prev_close_price'],
+        'prev_close_quantity': row['prev_close_quantity'],
+        'currency': row['currency'],
+        'account_id': row['account_id'],
+        'mark_price': mark_price,
+    }
+
+
 def cash_holding(amount, account_id):
     return {
         'conid': '', 'ticker': 'CASH', 'full_name': 'Cash', 'asset_class': 'CASH',
@@ -1258,6 +1282,62 @@ def get_portfolio():
     holdings = [build_holding(r) for r in rows]
     securities_value = _securities_value_from_xml(summary, holdings)
 
+    # Keep the dashboard available during a rolling deploy if the release
+    # task has not created the new table yet. PostgreSQL requires a savepoint
+    # here so an undefined-table error does not poison the request transaction.
+    c.execute('SAVEPOINT daily_pnl_contributions_lookup')
+    try:
+        if account_id == 'ALL':
+            c.execute('''SELECT * FROM daily_pnl_contributions
+                         WHERE user_id = ? AND date = ? AND day_pnl <> 0''',
+                      (user_id, latest_date))
+        else:
+            c.execute('''SELECT * FROM daily_pnl_contributions
+                         WHERE user_id = ? AND date = ? AND account_id = ?
+                           AND day_pnl <> 0''',
+                      (user_id, latest_date, account_id))
+        contribution_rows = c.fetchall()
+    except Exception as exc:
+        c.execute('ROLLBACK TO SAVEPOINT daily_pnl_contributions_lookup')
+        sqlstate = (
+            getattr(exc, 'pgcode', None) or getattr(exc, 'sqlstate', None)
+        )
+        if sqlstate != '42P01':
+            raise
+        logger.warning(
+            'daily_pnl_contributions table is not installed; using holdings fallback'
+        )
+        contribution_rows = []
+    finally:
+        c.execute('RELEASE SAVEPOINT daily_pnl_contributions_lookup')
+
+    mark_prices = {
+        (h['account_id'], h['conid']): h['mark_price']
+        for h in holdings if h['conid']
+    }
+    daily_pnl_contributions = [
+        build_daily_pnl_contribution(
+            row, mark_prices.get((row['account_id'], row['conid']))
+        )
+        for row in contribution_rows
+    ]
+
+    # Reports stored before this table was introduced retain the previous
+    # position-based view until their XML is ingested again.
+    if not daily_pnl_contributions:
+        daily_pnl_contributions = [
+            {
+                'conid': h['conid'], 'ticker': h['ticker'],
+                'full_name': h['full_name'], 'asset_class': h['asset_class'],
+                'day_pnl': h['day_pnl'],
+                'prev_close_price': h['prev_close_price'],
+                'prev_close_quantity': h['prev_close_quantity'],
+                'currency': h['currency'], 'account_id': h['account_id'],
+                'mark_price': h['mark_price'],
+            }
+            for h in holdings if h['ticker'] != 'CASH' and h['day_pnl'] != 0
+        ]
+
     cash_value = round(max(summary['cash_balance'], 0), 2)
     if cash_value > 0:
         holdings.append(cash_holding(cash_value, account_id))
@@ -1269,6 +1349,7 @@ def get_portfolio():
         'accounts': account_ids,
         'aliases': {aid: info.get(aid, {}).get('alias', '') for aid in account_ids},
         'holdings': holdings,
+        'daily_pnl_contributions': daily_pnl_contributions,
         'summary': {
             'total_value': round(securities_value, 2),
             'net_liquidation': summary['net_liquidation'],

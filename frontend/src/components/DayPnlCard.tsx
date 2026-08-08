@@ -1,10 +1,9 @@
 import { useMemo } from 'react'
 import type * as echarts from 'echarts/core'
-import type { Holding, Portfolio } from '../lib/types'
+import type { DailyPnlContribution, Portfolio } from '../lib/types'
 import { fmtUSD, fmtUSDFull } from '../lib/format'
 import { chartEmphasisItemStyle, getChartTheme } from '../lib/chartTheme'
 import { useEChart } from '../hooks/useEChart'
-import { displaySymbol } from '../lib/symbols'
 
 interface Props {
   portfolio: Portfolio
@@ -20,21 +19,21 @@ interface Row {
 }
 
 /**
- * Day P&L attribution: one diverging bar per position, straight from the
- * statement's MTM performance summary. Shows at a glance which holdings
- * drove today's account-level P&L.
+ * Daily P&L attribution: one diverging bar for every named row in the
+ * statement's MTM performance summary, including instruments traded and
+ * fully closed during the day.
  */
 export function DayPnlCard({ portfolio, hidden }: Props) {
   const rows = useMemo<Row[]>(
     () =>
-      portfolio.holdings
-        .filter((h) => h.ticker !== 'CASH')
-        .map((h: Holding) => ({
-          name: displaySymbol(h),
-          fullName: h.full_name,
-          pnl: h.day_pnl,
-          prevClose: h.prev_close_price,
-          close: h.mark_price,
+      portfolio.daily_pnl_contributions
+        .filter((contribution) => contribution.day_pnl !== 0)
+        .map((contribution: DailyPnlContribution) => ({
+          name: contribution.ticker,
+          fullName: contribution.full_name,
+          pnl: contribution.day_pnl,
+          prevClose: contribution.prev_close_price,
+          close: contribution.mark_price,
         }))
         .sort((a, b) => b.pnl - a.pnl),
     [portfolio],
@@ -48,7 +47,7 @@ export function DayPnlCard({ portfolio, hidden }: Props) {
     <div className="flex h-full flex-col rounded-[var(--radius-lg)] border border-border bg-surface shadow-[var(--shadow)]">
       <div className="flex items-center justify-between gap-3 px-5 pt-5 sm:px-6">
         <h2 className="text-[15px] font-semibold tracking-tight text-text">
-          Day P/L by position
+          Day P/L Contribution
         </h2>
         <span
           className={`rounded-full px-2.5 py-1 text-[12px] font-semibold tnum ${

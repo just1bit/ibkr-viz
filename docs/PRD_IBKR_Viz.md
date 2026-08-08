@@ -32,7 +32,7 @@ The parser expects one or more `FlexStatement` elements containing:
 | --- | --- |
 | `AccountInformation` | Alias, account type, SYEP/DRIP state, tax-lot method, open date |
 | `EquitySummaryInBase` | Current and previous NAV, stock/options values, cash and accruals |
-| `MTMPerformanceSummaryInBase` | Account and per-position daily P&L, previous close data |
+| `MTMPerformanceSummaryInBase` | Authoritative account total and every non-zero named instrument's daily P&L contribution, including fully closed intraday trades |
 | `OpenPositions` | Position value, quantity, cost/P&L data, asset and option metadata |
 
 The report date comes from each statement's `toDate`. Current dashboard totals use the latest stored position date and account summary rows.
@@ -54,4 +54,4 @@ flowchart TD
     PARSER --> ARCHIVE[("Local XML and S3/R2 archive")]
 ```
 
-Flask serves the React bundle and API, APScheduler runs hourly refreshes, and PostgreSQL stores users, sessions, accounts, positions, targets and fetch history.
+Flask serves the React bundle and API, APScheduler runs hourly refreshes, and PostgreSQL stores users, sessions, accounts, positions, daily P&L contributions, targets and fetch history.
