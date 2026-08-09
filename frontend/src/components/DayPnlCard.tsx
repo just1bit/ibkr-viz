@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import type * as echarts from 'echarts/core'
 import type { DailyPnlContribution, Portfolio } from '../lib/types'
 import { fmtUSD, fmtUSDFull } from '../lib/format'
+import { displayTicker } from '../lib/symbols'
 import { chartEmphasisItemStyle, getChartTheme } from '../lib/chartTheme'
 import { useEChart } from '../hooks/useEChart'
 
@@ -29,7 +30,7 @@ export function DayPnlCard({ portfolio, hidden }: Props) {
       portfolio.daily_pnl_contributions
         .filter((contribution) => contribution.day_pnl !== 0)
         .map((contribution: DailyPnlContribution) => ({
-          name: contribution.ticker,
+          name: displayTicker(contribution.ticker),
           fullName: contribution.full_name,
           pnl: contribution.day_pnl,
           prevClose: contribution.prev_close_price,
