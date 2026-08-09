@@ -5,6 +5,7 @@ import { fmtUSD, fmtUSDFull } from '../lib/format'
 import { displayTicker } from '../lib/symbols'
 import { chartEmphasisItemStyle, getChartTheme } from '../lib/chartTheme'
 import { useEChart } from '../hooks/useEChart'
+import { CardDate, CardTitle, PositionCount } from './CardMeta'
 
 interface Props {
   portfolio: Portfolio
@@ -46,18 +47,22 @@ export function DayPnlCard({ portfolio, hidden }: Props) {
 
   return (
     <div className="flex h-full flex-col rounded-[var(--radius-lg)] border border-border bg-surface shadow-[var(--shadow)]">
-      <div className="flex items-center justify-between gap-3 px-5 pt-5 sm:px-6">
-        <h2 className="text-[15px] font-semibold tracking-tight text-text">
-          Day P/L Contribution
-        </h2>
-        <span
-          className={`rounded-full px-2.5 py-1 text-[12px] font-semibold tnum ${
-            total >= 0 ? 'bg-pos/10 text-pos' : 'bg-neg/10 text-neg'
-          } ${hidden ? 'masked' : ''}`}
-        >
-          {total >= 0 ? '+' : ''}
-          {fmtUSD(total, hidden)}
-        </span>
+      <div className="flex flex-wrap items-center gap-3 px-5 pt-5 sm:px-6">
+        <div className="flex items-baseline gap-3">
+          <CardTitle>Day P/L Contribution</CardTitle>
+          <CardDate date={portfolio.date} />
+        </div>
+        <div className="ml-auto flex items-center gap-3">
+          <PositionCount count={rows.length} />
+          <span
+            className={`rounded-full px-2.5 py-1 text-[12px] font-semibold tnum ${
+              total >= 0 ? 'bg-pos/10 text-pos' : 'bg-neg/10 text-neg'
+            } ${hidden ? 'masked' : ''}`}
+          >
+            {total >= 0 ? '+' : ''}
+            {fmtUSD(total, hidden)}
+          </span>
+        </div>
       </div>
       <div
         className="relative min-h-[var(--mobile-chart-height)] flex-1 p-2 sm:min-h-[200px] sm:p-3"

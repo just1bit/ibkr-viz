@@ -69,6 +69,33 @@ class FlexParserTests(unittest.TestCase):
         )
         self.assertEqual(authoritative_total, contribution_total)
 
+    def test_negative_cash_is_persisted_as_short_cash_position(self):
+        xml = FLEX_XML.replace(
+            'reportDate="2026-08-05" total="1015"',
+            'reportDate="2026-08-05" total="1015" cash="-250.25"',
+        )
+
+        account = flex_parser.parse_flex_xml(xml)['accounts'][0]
+        cash = next(h for h in account['holdings'] if h['ticker'] == 'CASH')
+
+        self.assertEqual(-250.25, account['cash_balance'])
+        self.assertEqual(-250.25, cash['market_value'])
+        self.assertEqual('SHORT', cash['side'])
+
+    def test_cash_only_report_still_has_a_position_snapshot(self):
+        xml = FLEX_XML.replace(
+            'reportDate="2026-08-05" total="1015"',
+            'reportDate="2026-08-05" total="1015" cash="500"',
+        )
+        start = xml.index('  <OpenPositions>')
+        end = xml.index('  </OpenPositions>') + len('  </OpenPositions>')
+        xml = xml[:start] + '  <OpenPositions />' + xml[end:]
+
+        holdings = flex_parser.parse_flex_xml(xml)['accounts'][0]['holdings']
+
+        self.assertEqual(['CASH'], [h['ticker'] for h in holdings])
+        self.assertEqual(500, holdings[0]['market_value'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -938,7 +938,8 @@ def build_daily_pnl_contribution(row, mark_price=None):
 def cash_holding(amount, account_id):
     return {
         'conid': '', 'ticker': 'CASH', 'full_name': 'Cash', 'asset_class': 'CASH',
-        'side': '', 'quantity': amount, 'market_value': amount,
+        'side': 'LONG' if amount > 0 else 'SHORT',
+        'quantity': amount, 'market_value': amount,
         'mark_price': None, 'cost_price': None, 'cost_basis': None,
         'unrealized_pnl': 0, 'day_pnl': 0,
         'prev_close_price': None, 'prev_close_quantity': None,
@@ -947,6 +948,22 @@ def cash_holding(amount, account_id):
         'underlying_symbol': '', 'listing_exchange': '', 'currency': 'USD',
         'account_id': account_id,
     }
+
+
+def cash_holdings_for_view(summary, account_info, account_id):
+    """Return signed cash positions without cross-account gross netting."""
+    if account_id == 'ALL':
+        balances = (
+            (aid, round(account.get('cash_balance') or 0, 2))
+            for aid, account in account_info.items()
+        )
+    else:
+        balances = ((account_id, round(summary['cash_balance'], 2)),)
+    return [
+        cash_holding(value, aid)
+        for aid, value in balances
+        if value != 0
+    ]
 
 
 def group_summary(holdings, field):
@@ -967,9 +984,27 @@ def _securities_value_from_xml(summary, holdings):
     EquitySummary component is not stored.
     """
     supported = {'STOCK', 'ETF', 'OPTION'}
-    if holdings and all(h['asset_class'] in supported for h in holdings):
+    securities = [h for h in holdings if h['asset_class'] != 'CASH']
+    if securities and all(h['asset_class'] in supported for h in securities):
         return round(summary['stock_value'] + summary['options_value'], 2)
-    return sum(h['market_value'] for h in holdings)
+    return sum(h['market_value'] for h in securities)
+
+
+def exposure_summary(holdings, net_liquidation):
+    """Signed exposure totals, with short exposure reported as a magnitude."""
+    long_value = round(sum(max(h['market_value'], 0) for h in holdings), 2)
+    short_value = round(sum(abs(min(h['market_value'], 0)) for h in holdings), 2)
+    gross_value = round(long_value + short_value, 2)
+    net_value = round(long_value - short_value, 2)
+    nav = abs(net_liquidation)
+    return {
+        'long': long_value,
+        'short': short_value,
+        'gross': gross_value,
+        'net': net_value,
+        'gross_to_nav': round(gross_value / nav, 4) if nav else None,
+        'net_to_nav': round(net_value / nav, 4) if nav else None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1262,7 +1297,13 @@ def get_portfolio():
               (user_id,))
     latest_date = c.fetchone()['max_date']
     if not latest_date:
-        return jsonify({'error': 'No data'}), 404
+        # Reports created before CASH became a first-class position may have
+        # no position rows at all for cash-only users. Their report date is
+        # still available on the user record.
+        user = storage.get_user_by_id(conn, user_id)
+        latest_date = user['last_refresh'] if user else None
+        if not latest_date:
+            return jsonify({'error': 'No data'}), 404
 
     if account_id == 'ALL':
         c.execute('''SELECT * FROM positions
@@ -1273,18 +1314,18 @@ def get_portfolio():
                   (user_id, latest_date, account_id))
 
     rows = c.fetchall()
-    if not rows:
-        return jsonify({'error': 'No holdings found'}), 404
-
     summary = account_summary(c, user_id, account_id)
-
-    c.execute('''SELECT DISTINCT account_id FROM positions
-                 WHERE user_id = ? AND date = ?''', (user_id, latest_date))
-    account_ids = [r['account_id'] for r in c.fetchall()]
     info = get_account_info(c, user_id)
+    if account_id != 'ALL' and account_id not in info:
+        return jsonify({'error': 'Account not found'}), 404
+    account_ids = list(info) if account_id == 'ALL' else [account_id]
 
+    # New reports persist CASH as a position. Strip it before calculating the
+    # securities subtotal, then append one account-filtered aggregate below.
+    # The fallback keeps reports stored before this change fully compatible.
     holdings = [build_holding(r) for r in rows]
     securities_value = _securities_value_from_xml(summary, holdings)
+    holdings = [h for h in holdings if h['ticker'] != 'CASH']
 
     # Keep the dashboard available during a rolling deploy if the release
     # task has not created the new table yet. PostgreSQL requires a savepoint
@@ -1342,10 +1383,12 @@ def get_portfolio():
             for h in holdings if h['ticker'] != 'CASH' and h['day_pnl'] != 0
         ]
 
-    cash_value = round(max(summary['cash_balance'], 0), 2)
-    if cash_value > 0:
-        holdings.append(cash_holding(cash_value, account_id))
-    holdings.sort(key=lambda h: h['market_value'], reverse=True)
+    # Keep account cash balances separate in the consolidated view. Netting a
+    # positive balance in one account against margin financing in another
+    # would understate both long/short books and therefore gross exposure.
+    holdings.extend(cash_holdings_for_view(summary, info, account_id))
+    holdings.sort(key=lambda h: abs(h['market_value']), reverse=True)
+    exposures = exposure_summary(holdings, summary['net_liquidation'])
 
     return jsonify({
         'date': latest_date,
@@ -1361,6 +1404,7 @@ def get_portfolio():
             'previous_net_liquidation': summary['previous_net_liquidation'],
             'total_day_pnl': summary['day_pnl'],
         },
+        'exposures': exposures,
         'equity': {
             'stock': summary['stock_value'],
             'options': summary['options_value'],
