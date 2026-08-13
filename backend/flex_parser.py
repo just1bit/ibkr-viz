@@ -175,6 +175,37 @@ def parse_flex_xml(xml_text: str) -> Dict:
                 'currency': pos.get('currency', 'USD'),
             })
 
+        # Cash is an exposure in its own right. A positive balance is a long
+        # cash position; a negative balance is short cash (margin financing).
+        # Persisting it with the other positions also keeps cash-only accounts
+        # visible to the portfolio endpoint.
+        cash_balance = round(_num(latest_es, 'cash'), 2)
+        if cash_balance != 0:
+            holdings.append({
+                'conid': '',
+                'ticker': 'CASH',
+                'full_name': 'Cash',
+                'asset_class': 'CASH',
+                'side': 'LONG' if cash_balance > 0 else 'SHORT',
+                'quantity': cash_balance,
+                'market_value': cash_balance,
+                'mark_price': None,
+                'xml_percent_of_nav': None,
+                'cost_price': None,
+                'cost_basis': None,
+                'unrealized_pnl': 0,
+                'day_pnl': 0,
+                'prev_close_price': None,
+                'prev_close_quantity': None,
+                'multiplier': None,
+                'strike': None,
+                'expiry': '',
+                'put_call': '',
+                'underlying_symbol': '',
+                'listing_exchange': '',
+                'currency': 'USD',
+            })
+
         accounts.append({
             'account_id': account_id,
             'alias': info.get('acctAlias', ''),
@@ -184,7 +215,7 @@ def parse_flex_xml(xml_text: str) -> Dict:
             'tax_lot_method': info.get('taxLotMatchingMethod', ''),
             'date_opened': info.get('dateOpened', ''),
             'net_liquidation': round(_num(latest_es, 'total'), 2),
-            'cash_balance': round(_num(latest_es, 'cash'), 2),
+            'cash_balance': cash_balance,
             'stock_value': round(_num(latest_es, 'stock'), 2),
             'options_value': round(_num(latest_es, 'options'), 2),
             'dividend_accruals': round(_num(latest_es, 'dividendAccruals'), 2),

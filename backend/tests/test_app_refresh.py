@@ -11,6 +11,45 @@ os.environ['SCHEDULER_ENABLED'] = 'false'
 import app as backend_app
 
 
+class ExposureSummaryTests(unittest.TestCase):
+    def test_cash_and_securities_follow_the_same_signed_exposure_rules(self):
+        holdings = [
+            {'ticker': 'LONG', 'market_value': 1200},
+            {'ticker': 'SHORT', 'market_value': -450},
+            backend_app.cash_holding(-150, 'U1'),
+        ]
+
+        result = backend_app.exposure_summary(holdings, 600)
+
+        self.assertEqual(1200, result['long'])
+        self.assertEqual(600, result['short'])
+        self.assertEqual(1800, result['gross'])
+        self.assertEqual(600, result['net'])
+        self.assertEqual(3, result['gross_to_nav'])
+        self.assertEqual(1, result['net_to_nav'])
+
+    def test_cash_side_is_derived_from_balance_sign(self):
+        self.assertEqual('LONG', backend_app.cash_holding(10, 'U1')['side'])
+        self.assertEqual('SHORT', backend_app.cash_holding(-10, 'U1')['side'])
+
+    def test_consolidated_cash_does_not_hide_cross_account_gross_exposure(self):
+        positions = backend_app.cash_holdings_for_view(
+            {'cash_balance': 20},
+            {
+                'U1': {'cash_balance': 100},
+                'U2': {'cash_balance': -80},
+            },
+            'ALL',
+        )
+
+        result = backend_app.exposure_summary(positions, 20)
+
+        self.assertEqual(100, result['long'])
+        self.assertEqual(80, result['short'])
+        self.assertEqual(180, result['gross'])
+        self.assertEqual(20, result['net'])
+
+
 class FakeConnection:
     def commit(self):
         return None

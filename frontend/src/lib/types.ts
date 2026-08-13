@@ -79,6 +79,17 @@ export interface EquityComponents {
   total: number
 }
 
+export interface ExposureSummary {
+  /** Positive positions, including positive cash. */
+  long: number
+  /** Absolute magnitude of negative positions, including margin financing. */
+  short: number
+  gross: number
+  net: number
+  gross_to_nav: number | null
+  net_to_nav: number | null
+}
+
 export interface Portfolio {
   date: string
   account_id: string
@@ -87,12 +98,13 @@ export interface Portfolio {
   holdings: Holding[]
   daily_pnl_contributions: DailyPnlContribution[]
   summary: PortfolioSummary
+  exposures: ExposureSummary
   equity: EquityComponents
   asset_class_summary: AllocationSlice[]
   ticker_summary: AllocationSlice[]
 }
 
-/** Ticker target weights as percentages of invested securities value. */
+/** Per-book target weights. Short-book symbols use the `SHORT:` prefix. */
 export type Targets = Record<string, number>
 
 export interface Status {

@@ -2,19 +2,21 @@
 
 ## Purpose
 
-IBKR Portfolio Viz turns each user's latest Interactive Brokers Flex statement into a private dashboard for daily portfolio visibility and ticker-level target allocation.
+IBKR Portfolio Viz turns each user's latest Interactive Brokers Flex statement into a private dashboard for daily portfolio visibility, signed exposure analysis and ticker-level target allocation.
 
 ## Capabilities
 
 ### Access and dashboard
 
 - Google OAuth, server-side sessions, encrypted Flex credentials and `user_id` data isolation provide private access.
-- Consolidated and per-account views show NAV, cash, daily P&L, holdings and account metadata.
+- Consolidated and per-account views show NAV, cash, daily P&L, exposures and account metadata.
 - Linked charts, sortable holdings, amount masking, responsive layouts and light/dark themes support portfolio analysis.
 
-### Allocation
+### Exposure and allocation
 
-- Securities values drive ticker allocation, target weights, drift and buy/sell estimates; portfolio totals include cash and margin balances.
+- Positive market values are long exposure; negative market values are short exposure. Gross exposure is long plus the absolute short balance, while net exposure is long minus the absolute short balance.
+- Cash follows the same signed-position model as every other instrument: positive balances are long cash and negative balances (margin financing) are short cash.
+- Long and short books each support ticker allocation, target weights, drift and rebalance estimates. Short-book actions use short/cover terminology.
 - Targets are stored per user and account view. Largest-remainder rounding produces displayed weights totalling 100.0%.
 
 ### Refresh
@@ -32,7 +34,7 @@ The parser expects one or more `FlexStatement` elements containing:
 | Flex section | Stored or displayed data |
 | --- | --- |
 | `AccountInformation` | Alias, account type, SYEP/DRIP state, tax-lot method, open date |
-| `EquitySummaryInBase` | Current and previous NAV, stock/options values, cash and accruals |
+| `EquitySummaryInBase` | Current and previous NAV, stock/options values, accruals, and a signed cash position |
 | `MTMPerformanceSummaryInBase` | Authoritative account total and every non-zero named instrument's daily P&L contribution, including fully closed intraday trades |
 | `OpenPositions` | Position value, quantity, cost/P&L data, asset and option metadata |
 
