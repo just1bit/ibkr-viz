@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 
 export function CardTitle({ children }: { children: ReactNode }) {
-  return <h2 className="text-[17px] font-semibold tracking-tight text-text">{children}</h2>
+  return <h2 className="text-[15px] font-semibold tracking-tight text-text">{children}</h2>
 }
 
 export function CardDate({ date }: { date: string }) {

@@ -55,7 +55,7 @@ export function HoldingsCard({ portfolio, savedTargets, onSave, hidden }: Props)
 
   return (
     <section className="overflow-hidden rounded-[var(--radius-lg)] border border-border bg-surface shadow-[var(--shadow)]">
-      <div className="border-b border-border/70 px-4 py-2 sm:px-6 sm:py-1">
+      <div className="border-b border-border/70 px-4 py-2 sm:px-6 sm:py-2">
         <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center">
           <div className="flex shrink-0 items-baseline gap-3">
             <CardTitle>Exposure</CardTitle>
