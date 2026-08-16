@@ -1,6 +1,6 @@
 # IBKR Portfolio Viz
 
-A private, multi-user dashboard for Interactive Brokers Flex reports. Users sign in with Google, connect their own Flex Query, inspect portfolio performance and maintain per-account target allocations.
+A private, multi-user dashboard for Interactive Brokers Flex reports. Users sign in with Google, connect their own Flex Query, inspect portfolio performance and maintain per-account, per-book target allocations.
 
 ## Quick start
 
@@ -60,7 +60,9 @@ flowchart TD
     PARSER --> ARCHIVE[("Local XML and S3/R2 archive")]
 ```
 
-`fetch_and_store` serves credential tests, asynchronous manual refresh jobs and scheduled refreshes. It checks PostgreSQL, local XML and S3/R2, parses Flex data and stores report snapshots. Canonical XML archival runs after the database commit in a bounded background operation and skips objects already present. Market-timezone scheduling and per-user locking coordinate hourly updates.
+`fetch_and_store` serves credential tests, asynchronous manual refresh jobs and scheduled refreshes. It checks PostgreSQL, local XML and S3/R2, parses Flex data and stores report snapshots. Canonical XML archival runs after the database commit in a bounded background operation and preserves objects already stored for the report date. Market-timezone scheduling, expanding retry intervals and per-user locking coordinate hourly updates.
+
+The dashboard presents consolidated and per-account NAV, daily P&L attribution, signed exposure and directional target allocations.
 
 ## Data model
 
@@ -71,19 +73,14 @@ flowchart TD
 | `accounts` | Latest per-account NAV components and account metadata |
 | `positions` | User/account/report-date position snapshots |
 | `daily_pnl_contributions` | Non-zero named daily MTM contributions, including fully closed intraday trades |
-| `targets` | Per-user, per-account ticker target weights |
-| `fetch_log` | Refresh history |
+| `targets` | Per-user, per-account and per-book ticker target weights |
+| `fetch_log` | Refresh results, recoverable warnings and asynchronous manual-refresh job state |
 
 All application queries scope portfolio data by `user_id`. Private API and auth responses apply privacy-focused cache controls.
 
 ## Deployment and stack
 
-Pushes to `main` build the React app and deploy the backend, frontend bundle and Python requirements to the configured Azure Web App. Pull requests run the frontend build, Python compilation, shell syntax checks and the configured Copilot review gate.
-
-Run the `daily-pnl-contributions` release task once with this release to create
-its table and backfill existing snapshots from the canonical raw XML archive.
-The dashboard retains its previous position-based view as a rolling-deploy
-fallback until the task completes.
+Pushes to `main` build the React app and deploy the backend, frontend bundle and Python requirements to the configured Azure Web App. Pull requests run the frontend build, Python compilation, backend unit tests, shell syntax checks and the configured Copilot review gate.
 
 React 18, TypeScript, Tailwind CSS 4, ECharts 5, Flask, APScheduler, gunicorn, PostgreSQL, S3-compatible object storage and Fernet encryption.
 
