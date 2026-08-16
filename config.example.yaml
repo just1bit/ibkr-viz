@@ -4,29 +4,29 @@
 # config.local.yaml is git-ignored.
 # =============================================================================
 
-# --- Google OAuth (required) --------------------------------------------------
+# --- Google OAuth -------------------------------------------------------------
 # Create OAuth 2.0 Web Application at https://console.cloud.google.com
 # Add {base_url}/auth/callback as authorized redirect URI.
 google_client_id: ""
 google_client_secret: ""
 base_url: "http://localhost:5123"
 
-# --- Session & Encryption (required) ------------------------------------------
+# --- Session & Encryption -----------------------------------------------------
 # Generate: python -c "import secrets; print(secrets.token_hex(32))"
 secret_key: ""
 # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 flex_encryption_key: ""
 
-# --- Database (required) ------------------------------------------------------
-# PostgreSQL only. Run backend/schema.sql to create tables first.
+# --- Database ----------------------------------------------------------------
+# PostgreSQL stores application data. backend/schema.sql defines the tables.
 postgres_url: "postgresql://user:pass@host:5432/dbname"
 
 # --- IBKR Flex ----------------------------------------------------------------
 flex_max_wait: 30          # seconds, max wait for IBKR Flex response
 
-# --- S3 Storage (optional) ----------------------------------------------------
-# Leave s3_bucket empty to skip S3. Raw XML is archived per report date.
-# Compatible with AWS S3, Cloudflare R2, MinIO.
+# --- S3 Storage ---------------------------------------------------------------
+# A configured bucket enables canonical raw XML archives by report date.
+# AWS S3, Cloudflare R2 and MinIO provide compatible object storage.
 s3_bucket: ""
 s3_endpoint: ""
 s3_region: "auto"
@@ -36,14 +36,14 @@ s3_prefix: "flex_raw/"
 s3_connect_timeout: 3      # seconds per object-store connection attempt
 s3_read_timeout: 10        # seconds per object-store response attempt
 s3_total_max_attempts: 3   # initial request plus bounded retries
-# Override only when the default project-local cache is unsuitable.
-# flex_cache_dir: "/home/data/flex_cache"  # recommended for Azure App Service
+# flex_cache_dir selects the durable local cache path.
+# flex_cache_dir: "/home/data/flex_cache"  # Azure App Service example
 
 # --- Refresh Scheduling -------------------------------------------------------
 market_timezone: "America/New_York"
 report_ready_hour: 1       # hour in market TZ when IBKR report is expected
-fetch_retry_backoff: 3600  # seconds between retries when report is missing
-fetch_max_failures: 4      # stop automatic retries after this many consecutive failures
+fetch_retry_backoff: 3600  # base seconds for expanding report retry intervals
+fetch_max_failures: 4      # consecutive-failure threshold for automatic refresh status
 refresh_cooldown: 600      # seconds between manual refresh clicks per user
 scheduler_max_workers: 8   # max concurrent users during hourly refresh
 scheduler_enabled: true
