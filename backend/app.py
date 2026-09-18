@@ -413,6 +413,28 @@ def _safe_log_warning(user_id, warning_code, warning_detail,
             return_db(conn)
 
 
+def _known_accounts(cursor, user_id):
+    cursor.execute('SELECT account_id FROM accounts WHERE user_id = ?', (user_id,))
+    return {row['account_id'] for row in cursor.fetchall()}
+
+
+def _complete_snapshot(cursor, user_id, report_date, known_accounts):
+    cursor.execute('SELECT DISTINCT account_id FROM positions WHERE user_id = ? AND date = ?',
+                   (user_id, report_date))
+    present = {row['account_id'] for row in cursor.fetchall()}
+    return bool(present) and known_accounts.issubset(present)
+
+
+def _report_incomplete(data, known_accounts, expected):
+    present = {a['account_id'] for a in data['accounts']}
+    missing = known_accounts - present
+    if not present or missing:
+        return 'Incomplete Flex report: missing accounts ' + ', '.join(sorted(missing))
+    if data['date'] < expected:
+        return f"Flex report is stale: {data['date']} (expected {expected})"
+    return None
+
+
 def _store_parsed_data(user_id, data, report_date, *, source='unknown',
                        trigger='unknown', duration_ms=0):
     """Store parsed Flex data to DB. Returns error string or None."""
@@ -420,10 +442,20 @@ def _store_parsed_data(user_id, data, report_date, *, source='unknown',
     store_error = None
     try:
         c = conn.cursor()
-        c.execute('''SELECT COUNT(*) AS cnt FROM positions
-                     WHERE user_id = ? AND date = ?''', (user_id, report_date))
-        if c.fetchone()['cnt'] == 0:
-            store_report(conn, user_id, data, report_date)
+        # Serialize replacement across workers, and replace the full dated snapshot
+        # atomically so a previously partial day can be repaired without duplicates.
+        c.execute('SELECT user_id FROM users WHERE user_id = ? FOR UPDATE', (user_id,))
+        c.execute('SELECT MAX(date) AS latest FROM positions WHERE user_id = ?', (user_id,))
+        latest = c.fetchone()['latest']
+        incomplete = _report_incomplete(data, _known_accounts(c, user_id), report_date)
+        if incomplete:
+            raise ValueError(incomplete)
+        if latest and latest > report_date:
+            raise ValueError('Refusing to replace current account totals with an older report')
+        for table in ('positions', 'daily_pnl_contributions'):
+            c.execute(f'DELETE FROM {table} WHERE user_id = ? AND date = ?',
+                      (user_id, report_date))
+        store_report(conn, user_id, data, report_date)
 
         storage.set_user_last_refresh(
             conn, user_id, report_date, commit=False
@@ -456,7 +488,7 @@ def _store_parsed_data(user_id, data, report_date, *, source='unknown',
     return None
 
 
-def _ingest_cached_xml(user_id, expected, xml_text, source, trigger):
+def _ingest_cached_xml(user_id, expected, xml_text, source, trigger, known_accounts=()):
     """Parse and store a cache candidate when it satisfies this refresh.
 
     Returns a fetch_and_store-compatible result, or None when the cache is
@@ -472,11 +504,12 @@ def _ingest_cached_xml(user_id, expected, xml_text, source, trigger):
         return None
 
     report_date = data['date']
-    if report_date < expected:
+    incomplete = _report_incomplete(data, set(known_accounts), expected)
+    if incomplete:
         logger.info(
-            'Flex cache stale user=%s trigger=%s source=%s '
-            'report_date=%s expected_date=%s',
-            user_id, trigger, source, report_date, expected,
+            'Flex cache rejected user=%s trigger=%s source=%s '
+            'report_date=%s expected_date=%s reason=%s',
+            user_id, trigger, source, report_date, expected, incomplete,
         )
         return None
 
@@ -510,7 +543,7 @@ def _ingest_cached_xml(user_id, expected, xml_text, source, trigger):
     return report_date, True, None, accounts
 
 
-def _recover_cached_report(user_id, expected, trigger='unknown'):
+def _recover_cached_report(user_id, expected, trigger='unknown', known_accounts=()):
     """Try the latest local XML, then exact-date canonical R2."""
     local_read_failed = False
     try:
@@ -530,7 +563,7 @@ def _recover_cached_report(user_id, expected, trigger='unknown'):
             user_id, trigger, expected,
         )
         result = _ingest_cached_xml(
-            user_id, expected, xml_text, 'local', trigger
+            user_id, expected, xml_text, 'local', trigger, known_accounts
         )
         if result:
             return result
@@ -558,7 +591,7 @@ def _recover_cached_report(user_id, expected, trigger='unknown'):
             user_id, trigger, expected,
         )
         result = _ingest_cached_xml(
-            user_id, expected, xml_text, 'canonical', trigger
+            user_id, expected, xml_text, 'canonical', trigger, known_accounts
         )
         if result:
             return result
@@ -592,12 +625,16 @@ def refresh_user_data(user_id):
         row = c.fetchone()
         latest_stored = row['latest'] if row else None
 
-        if latest_stored and latest_stored >= expected:
+        known_accounts = _known_accounts(c, user_id)
+        if (latest_stored and latest_stored >= expected
+                and _complete_snapshot(c, user_id, latest_stored, known_accounts)):
             return latest_stored, False, None
     finally:
         return_db(conn)
 
-    result = _recover_cached_report(user_id, expected, trigger='recovery')
+    result = _recover_cached_report(
+        user_id, expected, trigger='recovery', known_accounts=known_accounts
+    )
     if result:
         report_date, is_new, error, _accounts = result
         return report_date, is_new, error
@@ -673,7 +710,9 @@ def _fetch_and_store_unlocked(user_id, *, force=False, trigger='automatic'):
         row = c.fetchone()
         latest_stored = row['latest'] if row else None
 
-        if latest_stored and latest_stored >= expected:
+        known_accounts = _known_accounts(c, user_id)
+        if (latest_stored and latest_stored >= expected
+                and _complete_snapshot(c, user_id, latest_stored, known_accounts)):
             c.execute('SELECT account_id, alias, account_type FROM accounts WHERE user_id = ?',
                       (user_id,))
             accounts = [{'account_id': r['account_id'], 'alias': r['alias'],
@@ -692,7 +731,9 @@ def _fetch_and_store_unlocked(user_id, *, force=False, trigger='automatic'):
     # Cache work can open its own DB transaction, so release the lookup
     # connection first. This also keeps the scheduler's connection usage
     # bounded when several users refresh concurrently.
-    cached_result = _recover_cached_report(user_id, expected, trigger=trigger)
+    cached_result = _recover_cached_report(
+        user_id, expected, trigger=trigger, known_accounts=known_accounts
+    )
     if cached_result:
         return cached_result
 
@@ -783,6 +824,19 @@ def _fetch_and_store_unlocked(user_id, *, force=False, trigger='automatic'):
 
     report_date = data['date']
     accounts = _accounts_from_data(data)
+    logger.info(
+        'Flex report parsed user=%s trigger=%s report_date=%s accounts=%s expected_accounts=%s',
+        user_id, trigger, report_date,
+        sorted(a['account_id'] for a in data['accounts']), sorted(known_accounts),
+    )
+
+    incomplete = _report_incomplete(data, known_accounts, expected)
+    if incomplete:
+        # A partial response is retryable, not a successful daily snapshot.
+        # Warnings preserve scheduler eligibility and the ordinary retry interval.
+        _safe_log_warning(user_id, 'FLEX_INCOMPLETE', incomplete, report_date,
+                          trigger=trigger, source='ibkr')
+        return None, False, incomplete, accounts
 
     # The Flex client has already persisted the XML locally. Commit portfolio
     # data first, then archive canonically without extending request latency.
