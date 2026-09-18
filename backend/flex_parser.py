@@ -180,7 +180,7 @@ def parse_flex_xml(xml_text: str) -> Dict:
         # Persisting it with the other positions also keeps cash-only accounts
         # visible to the portfolio endpoint.
         cash_balance = round(_num(latest_es, 'cash'), 2)
-        if cash_balance != 0:
+        if cash_balance != 0 or not holdings:
             holdings.append({
                 'conid': '',
                 'ticker': 'CASH',
@@ -229,4 +229,6 @@ def parse_flex_xml(xml_text: str) -> Dict:
             'holdings': holdings,
         })
 
-    return {'date': max(report_dates), 'accounts': accounts}
+    if not report_dates or any(not d for d in report_dates) or len(set(report_dates)) != 1:
+        raise ValueError('Flex statements must have one common, non-empty report date')
+    return {'date': report_dates[0], 'accounts': accounts}
